@@ -1,0 +1,27 @@
+# Django and core dependencies
+Django==4.2.7
+djangorestframework==3.14.0
+django-cors-headers==4.3.1
+django-filter==23.5
+djangorestframework-simplejwt==5.3.0
+
+# Database
+
+mysql-connector==2.2.9
+mysqlclient==2.2.7
+# Environment management
+python-decouple==3.8
+
+
+
+# Additional utilities
+Pillow==11.3.0
+requests==2.31.0
+pandas==2.2.3
+openpyxl==3.1.2
+xlrd==2.0.1
+
+# Development dependencies
+black==23.12.1
+isort==5.13.2
+flake8==6.1.0
