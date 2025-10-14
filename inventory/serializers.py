@@ -127,9 +127,15 @@ class BulkOrderSerializer(serializers.ModelSerializer):
     payments = BulkOrderPaymentSerializer(many=True, read_only=True)
     
     buyer_organization_name = serializers.CharField(source='buyer_organization.name', read_only=True)
-    buyer_branch_name = serializers.CharField(source='buyer_branch.name', read_only=True)
+    buyer_branch_name = serializers.SerializerMethodField()
     supplier_organization_name = serializers.CharField(source='supplier_organization.name', read_only=True)
-    supplier_user_name = serializers.CharField(source='supplier_user.get_full_name', read_only=True)
+    supplier_user_name = serializers.SerializerMethodField()
+    
+    def get_buyer_branch_name(self, obj):
+        return obj.buyer_branch.name if obj.buyer_branch else 'No Branch'
+    
+    def get_supplier_user_name(self, obj):
+        return obj.supplier_user.get_full_name() if obj.supplier_user else 'Unknown User'
     
     total_items = serializers.IntegerField(read_only=True)
     total_quantity = serializers.IntegerField(read_only=True)
@@ -173,7 +179,16 @@ class BulkOrderCreateSerializer(serializers.ModelSerializer):
         # Get buyer info from request user
         user = self.context['request'].user
         buyer_organization = Organization.objects.get(id=user.organization_id)
-        buyer_branch = Branch.objects.get(id=user.branch_id)
+        
+        # Get buyer branch - handle case where user might not have branch_id
+        branch_id = getattr(user, 'branch_id', None)
+        if branch_id:
+            buyer_branch = Branch.objects.get(id=branch_id)
+        else:
+            # Get default branch for organization
+            buyer_branch = Branch.objects.filter(organization=buyer_organization).first()
+            if not buyer_branch:
+                raise serializers.ValidationError("No branch found for user's organization")
         
         # Create bulk order
         bulk_order = BulkOrder.objects.create(

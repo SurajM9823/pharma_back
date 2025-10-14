@@ -68,18 +68,22 @@ def bulk_orders_list(request):
             
             orders_data = []
             for order in orders:
-                order_data = BulkOrderSerializer(order).data
-                
-                available_actions = []
-                if is_supplier_view:
-                    if order.status == BulkOrder.DELIVERED:
-                        available_actions.append('release_stock')
-                else:
-                    if order.status == BulkOrder.COMPLETED:
-                        available_actions.append('import_stock')
-                
-                order_data['available_actions'] = available_actions
-                orders_data.append(order_data)
+                try:
+                    order_data = BulkOrderSerializer(order).data
+                    
+                    available_actions = []
+                    if is_supplier_view:
+                        if order.status == BulkOrder.DELIVERED:
+                            available_actions.append('release_stock')
+                    else:
+                        if order.status == BulkOrder.COMPLETED:
+                            available_actions.append('import_stock')
+                    
+                    order_data['available_actions'] = available_actions
+                    orders_data.append(order_data)
+                except Exception as serializer_error:
+                    print(f"DEBUG: Serializer error for order {order.id}: {str(serializer_error)}")
+                    continue
             
             print(f"DEBUG: Final result: {len(orders_data)}")
             return Response(orders_data)
