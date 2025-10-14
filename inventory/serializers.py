@@ -13,13 +13,13 @@ User = get_user_model()
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
         model = Category
-        fields = ['id', 'name', 'description', 'is_active']
+        fields = ['id', 'name', 'description', 'parent', 'is_active', 'organization']
 
 
 class ManufacturerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Manufacturer
-        fields = ['id', 'name', 'contact_person', 'phone', 'email']
+        fields = ['id', 'name', 'contact_person', 'phone', 'email', 'address', 'website', 'license_number', 'is_active', 'organization']
 
 
 class ProductSerializer(serializers.ModelSerializer):
