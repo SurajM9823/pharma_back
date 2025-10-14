@@ -58,8 +58,10 @@ def sales_summary(request):
             total_tax=Sum('tax_amount') or Decimal('0')
         )
         
-        # Get unique customers count
-        unique_customers = sales_qs.values('patient_name', 'patient_phone').distinct().count()
+        # Get unique customers count (handle None values)
+        unique_customers = sales_qs.exclude(
+            Q(patient_name__isnull=True) & Q(patient_phone__isnull=True)
+        ).values('patient_name', 'patient_phone').distinct().count()
         
         # Calculate profit (selling price - cost price)
         total_cost = Decimal('0')
@@ -68,9 +70,10 @@ def sales_summary(request):
         for sale in sales_qs.prefetch_related('items__product'):
             for item in sale.items.all():
                 cost_price = item.product.cost_price or Decimal('0')
-                selling_price = item.unit_price
-                item_cost = cost_price * item.quantity
-                item_profit = (selling_price - cost_price) * item.quantity
+                selling_price = item.unit_price or Decimal('0')
+                quantity = item.quantity or 0
+                item_cost = cost_price * quantity
+                item_profit = (selling_price - cost_price) * quantity
                 total_cost += item_cost
                 total_profit += item_profit
         
@@ -92,11 +95,16 @@ def sales_summary(request):
         sales_growth = 0
         transaction_growth = 0
         
-        if prev_sales['total_sales'] > 0:
-            sales_growth = ((summary['total_sales'] - prev_sales['total_sales']) / prev_sales['total_sales']) * 100
+        prev_total_sales = prev_sales['total_sales'] or Decimal('0')
+        prev_total_transactions = prev_sales['total_transactions'] or 0
+        current_total_sales = summary['total_sales'] or Decimal('0')
+        current_total_transactions = summary['total_transactions'] or 0
         
-        if prev_sales['total_transactions'] > 0:
-            transaction_growth = ((summary['total_transactions'] - prev_sales['total_transactions']) / prev_sales['total_transactions']) * 100
+        if prev_total_sales > 0:
+            sales_growth = ((current_total_sales - prev_total_sales) / prev_total_sales) * 100
+        
+        if prev_total_transactions > 0:
+            transaction_growth = ((current_total_transactions - prev_total_transactions) / prev_total_transactions) * 100
         
         return Response({
             'summary': {
@@ -109,7 +117,7 @@ def sales_summary(request):
                 'total_tax': float(summary['total_tax']),
                 'total_cost': float(total_cost),
                 'total_profit': float(total_profit),
-                'profit_margin': float((total_profit / summary['total_sales']) * 100) if summary['total_sales'] > 0 else 0,
+                'profit_margin': float((total_profit / current_total_sales) * 100) if current_total_sales > 0 else 0,
                 'sales_growth': float(sales_growth),
                 'transaction_growth': float(transaction_growth)
             },
@@ -262,8 +270,11 @@ def top_selling_products(request):
         for product in top_products:
             cost_price = product['product__cost_price'] or Decimal('0')
             avg_selling_price = product['avg_price'] or Decimal('0')
+            total_quantity = product['total_quantity'] or 0
+            total_revenue = product['total_revenue'] or Decimal('0')
+            
             profit_per_unit = avg_selling_price - cost_price
-            total_profit = profit_per_unit * product['total_quantity']
+            total_profit = profit_per_unit * total_quantity
             profit_margin = (profit_per_unit / avg_selling_price * 100) if avg_selling_price > 0 else 0
             
             products_data.append({
@@ -272,8 +283,8 @@ def top_selling_products(request):
                 'generic_name': product['product__generic_name'],
                 'strength': product['product__strength'],
                 'dosage_form': product['product__dosage_form'],
-                'quantity_sold': product['total_quantity'],
-                'total_revenue': float(product['total_revenue']),
+                'quantity_sold': total_quantity,
+                'total_revenue': float(total_revenue),
                 'total_transactions': product['total_transactions'],
                 'avg_selling_price': float(product['avg_price']),
                 'cost_price': float(cost_price),
@@ -327,17 +338,19 @@ def payment_methods_report(request):
         ).order_by('-total_amount')
         
         # Calculate total for percentages
-        total_amount = sum(item['total_amount'] for item in payment_data)
-        total_transactions = sum(item['transaction_count'] for item in payment_data)
+        total_amount = sum(item['total_amount'] or Decimal('0') for item in payment_data)
+        total_transactions = sum(item['transaction_count'] or 0 for item in payment_data)
         
         # Format data
         formatted_data = []
         for item in payment_data:
-            percentage = (item['total_amount'] / total_amount * 100) if total_amount > 0 else 0
+            item_amount = item['total_amount'] or Decimal('0')
+            item_count = item['transaction_count'] or 0
+            percentage = (item_amount / total_amount * 100) if total_amount > 0 else 0
             formatted_data.append({
-                'payment_method': item['payment_method'],
-                'total_amount': float(item['total_amount']),
-                'transaction_count': item['transaction_count'],
+                'payment_method': item['payment_method'] or 'unknown',
+                'total_amount': float(item_amount),
+                'transaction_count': item_count,
                 'percentage': float(percentage)
             })
         
