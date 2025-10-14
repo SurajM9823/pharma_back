@@ -127,7 +127,9 @@ class ProductViewSet(ModelViewSet):
                 else:
                     raise ValueError(f"Unsupported file format: {file.name}. Please use .csv, .xlsx, or .xls files.")
                 
-                org_id = getattr(request.user, 'organization_id', 1)
+                org_id = getattr(request.user, 'organization_id', None)
+                if not org_id:
+                    return Response({'error': 'User not associated with an organization'}, status=400)
                 
                 created_count = 0
                 errors = []

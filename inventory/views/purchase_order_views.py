@@ -66,6 +66,15 @@ def bulk_orders_list(request):
             
             orders = orders.order_by('-created_at')
             
+            # Handle pagination
+            page = int(request.GET.get('page', 1))
+            page_size = int(request.GET.get('page_size', 10))
+            start = (page - 1) * page_size
+            end = start + page_size
+            
+            total_count = orders.count()
+            orders = orders[start:end]
+            
             orders_data = []
             for order in orders:
                 try:
@@ -757,7 +766,13 @@ def purchase_order_import_stock(request, order_id):
         items_data = data.get('items', [])
         
         if not branch_id:
-            branch_id = 1
+            # Get default branch for the organization
+            from organizations.models import Branch
+            default_branch = Branch.objects.filter(organization_id=organization_id).first()
+            if default_branch:
+                branch_id = default_branch.id
+            else:
+                return Response({'error': 'No branch found for user organization'}, status=400)
         
         created_items = []
         total_amount = 0
@@ -954,6 +969,40 @@ def purchase_order_ship(request, order_id):
             'message': 'Order shipped successfully',
             'order': BulkOrderSerializer(bulk_order).data
         })
+        
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def get_supplier_inventory_prices(request):
+    """Get supplier's inventory prices for products."""
+    try:
+        products_data = request.data.get('products', [])
+        prices = {}
+        
+        user = request.user
+        organization_id = getattr(user, 'organization_id', None)
+        
+        if not organization_id:
+            return Response({'error': 'User not associated with organization'}, status=400)
+        
+        for product_data in products_data:
+            order_item_id = product_data.get('order_item_id')
+            product_name = product_data.get('name', '')
+            
+            # Try to find matching inventory item
+            inventory_item = InventoryItem.objects.filter(
+                product__name__icontains=product_name,
+                organization_id=organization_id,
+                quantity__gt=0
+            ).first()
+            
+            if inventory_item:
+                prices[order_item_id] = float(inventory_item.cost_price)
+        
+        return Response(prices)
         
     except Exception as e:
         return Response({'error': str(e)}, status=500)
