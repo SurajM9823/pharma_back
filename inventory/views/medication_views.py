@@ -249,35 +249,71 @@ def medicine_search(request):
         return Response({'error': str(e)}, status=500)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def categories_list(request):
-    """Get list of categories."""
+    """Get list of categories or create new category."""
     try:
         organization_id = getattr(request.user, 'organization_id', None)
         if not organization_id:
-            return Response([])
+            return Response({'error': 'User not associated with an organization'}, status=400)
         
-        categories = Category.objects.filter(organization_id=organization_id)
-        serializer = CategorySerializer(categories, many=True)
-        return Response(serializer.data)
+        if request.method == 'GET':
+            categories = Category.objects.filter(organization_id=organization_id)
+            serializer = CategorySerializer(categories, many=True)
+            return Response(serializer.data)
+        
+        elif request.method == 'POST':
+            data = request.data.copy()
+            data['organization_id'] = organization_id
+            serializer = CategorySerializer(data=data)
+            if serializer.is_valid():
+                serializer.save(created_by=request.user)
+                return Response({
+                    'success': True,
+                    'data': serializer.data,
+                    'message': 'Category created successfully'
+                })
+            else:
+                return Response({
+                    'success': False,
+                    'errors': serializer.errors
+                }, status=400)
         
     except Exception as e:
         return Response({'error': str(e)}, status=500)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def manufacturers_list(request):
-    """Get list of manufacturers."""
+    """Get list of manufacturers or create new manufacturer."""
     try:
         organization_id = getattr(request.user, 'organization_id', None)
         if not organization_id:
-            return Response([])
+            return Response({'error': 'User not associated with an organization'}, status=400)
         
-        manufacturers = Manufacturer.objects.filter(organization_id=organization_id)
-        serializer = ManufacturerSerializer(manufacturers, many=True)
-        return Response(serializer.data)
+        if request.method == 'GET':
+            manufacturers = Manufacturer.objects.filter(organization_id=organization_id)
+            serializer = ManufacturerSerializer(manufacturers, many=True)
+            return Response(serializer.data)
+        
+        elif request.method == 'POST':
+            data = request.data.copy()
+            data['organization_id'] = organization_id
+            serializer = ManufacturerSerializer(data=data)
+            if serializer.is_valid():
+                serializer.save(created_by=request.user)
+                return Response({
+                    'success': True,
+                    'data': serializer.data,
+                    'message': 'Manufacturer created successfully'
+                })
+            else:
+                return Response({
+                    'success': False,
+                    'errors': serializer.errors
+                }, status=400)
         
     except Exception as e:
         return Response({'error': str(e)}, status=500)
