@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import reports_views
 
 app_name = 'pos'
 
@@ -25,4 +26,14 @@ urlpatterns = [
     
     # Settings
     path('settings/', views.pos_settings, name='pos_settings'),
+    
+    # Reports endpoints
+    path('reports/sales-summary/', reports_views.sales_summary, name='sales_summary'),
+    path('reports/daily-trend/', reports_views.daily_sales_trend, name='daily_sales_trend'),
+    path('reports/hourly-pattern/', reports_views.hourly_sales_pattern, name='hourly_sales_pattern'),
+    path('reports/top-products/', reports_views.top_selling_products, name='top_selling_products'),
+    path('reports/payment-methods/', reports_views.payment_methods_report, name='payment_methods_report'),
+    path('reports/staff-performance/', reports_views.staff_performance_report, name='staff_performance_report'),
+    path('reports/customer-analytics/', reports_views.customer_analytics, name='customer_analytics'),
+    path('reports/export/', reports_views.export_sales_report, name='export_sales_report'),
 ]
