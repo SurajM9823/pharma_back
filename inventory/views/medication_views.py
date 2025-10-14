@@ -265,7 +265,7 @@ def categories_list(request):
         
         elif request.method == 'POST':
             data = request.data.copy()
-            data['organization_id'] = organization_id
+            data['organization'] = organization_id
             serializer = CategorySerializer(data=data)
             if serializer.is_valid():
                 serializer.save(created_by=request.user)
@@ -300,7 +300,7 @@ def manufacturers_list(request):
         
         elif request.method == 'POST':
             data = request.data.copy()
-            data['organization_id'] = organization_id
+            data['organization'] = organization_id
             serializer = ManufacturerSerializer(data=data)
             if serializer.is_valid():
                 serializer.save(created_by=request.user)
