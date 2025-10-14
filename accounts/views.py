@@ -333,10 +333,44 @@ def update_user_permissions(request, user_id):
         return Response({'error': str(e)}, status=500)
 
 
-@api_view(['GET'])
+@api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def users_list(request):
-    """Get users list"""
+    """Get users list or create new user"""
+    if request.method == 'POST':
+        # Create new user
+        try:
+            from .serializers import UserSerializer
+            from django.contrib.auth.hashers import make_password
+            
+            data = request.data.copy()
+            
+            # Hash the password
+            if 'password' in data:
+                data['plain_text_password'] = data['password']
+                data['password'] = make_password(data['password'])
+            
+            serializer = UserSerializer(data=data)
+            if serializer.is_valid():
+                user = serializer.save()
+                return Response({
+                    'success': True,
+                    'data': UserSerializer(user).data,
+                    'message': 'User created successfully'
+                })
+            else:
+                return Response({
+                    'success': False,
+                    'error': 'Validation failed',
+                    'errors': serializer.errors
+                }, status=400)
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=500)
+    
+    # GET request - list users
     user = request.user
     role_filter = request.GET.get('role')
     branch_filter = request.GET.get('branch_id')
