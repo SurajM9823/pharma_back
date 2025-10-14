@@ -333,6 +333,79 @@ def update_user_permissions(request, user_id):
         return Response({'error': str(e)}, status=500)
 
 
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def user_detail(request, user_id):
+    """Get or update user details"""
+    try:
+        user = User.objects.get(id=user_id)
+        
+        if request.method == 'GET':
+            from .serializers import UserSerializer
+            serializer = UserSerializer(user)
+            return Response({
+                'success': True,
+                'data': serializer.data
+            })
+        
+        elif request.method == 'PUT':
+            from .serializers import UserSerializer
+            serializer = UserSerializer(user, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({
+                    'success': True,
+                    'data': serializer.data,
+                    'message': 'User updated successfully'
+                })
+            else:
+                return Response({
+                    'success': False,
+                    'errors': serializer.errors
+                }, status=400)
+                
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def change_user_password(request, user_id):
+    """Change user password"""
+    try:
+        from django.contrib.auth.hashers import make_password
+        
+        user = User.objects.get(id=user_id)
+        new_password = request.data.get('new_password')
+        
+        if not new_password:
+            return Response({
+                'success': False,
+                'error': 'New password is required'
+            }, status=400)
+        
+        # Update password
+        user.password = make_password(new_password)
+        user.plain_text_password = new_password
+        user.save()
+        
+        return Response({
+            'success': True,
+            'message': 'Password updated successfully',
+            'user': {
+                'id': user.id,
+                'plain_text_password': user.plain_text_password
+            }
+        })
+        
+    except User.DoesNotExist:
+        return Response({'error': 'User not found'}, status=404)
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
 @api_view(['GET', 'POST'])
 @permission_classes([IsAuthenticated])
 def users_list(request):
