@@ -10,12 +10,12 @@ from . import views
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    path('backend/auth/', include('accounts.urls')),
-    path('backend/organizations/', include('organizations.urls')),
-    path('backend/inventory/', include('inventory.urls')),
-    path('backend/pos/', include('pos.urls')),
-    path('backend/patients/', include('patients.urls')),
-    path('backend/', views.api_status),
+    path('auth/', include('accounts.urls')),
+    path('organizations/', include('organizations.urls')),
+    path('inventory/', include('inventory.urls')),
+    path('pos/', include('pos.urls')),
+    path('patients/', include('patients.urls')),
+    path('', views.api_status),
 ]
 
 if settings.DEBUG:
