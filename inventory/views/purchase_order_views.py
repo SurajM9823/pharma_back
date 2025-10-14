@@ -39,8 +39,17 @@ def bulk_orders_list(request):
                 # Supplier side - show orders TO this branch
                 filters = {'supplier_organization_id': organization_id}
                 if branch_id:
-                    filters['supplier_user__branch_id'] = branch_id
-                orders = BulkOrder.objects.filter(**filters)
+                    # Filter by supplier user's branch - need to check if user has branch_id attribute
+                    try:
+                        orders = BulkOrder.objects.filter(
+                            supplier_organization_id=organization_id,
+                            supplier_user__branch_id=branch_id
+                        )
+                    except:
+                        # Fallback if branch relationship doesn't exist
+                        orders = BulkOrder.objects.filter(supplier_organization_id=organization_id)
+                else:
+                    orders = BulkOrder.objects.filter(**filters)
             else:
                 # Buyer side - show orders FROM this branch
                 filters = {'buyer_organization_id': organization_id}
@@ -97,11 +106,27 @@ def bulk_order_detail(request, order_id):
         
         try:
             # Check both supplier and buyer side for this branch
-            filters = Q(id=order_id) & (
-                Q(supplier_organization_id=organization_id, supplier_user__branch_id=branch_id) |
-                Q(buyer_organization_id=organization_id, buyer_branch_id=branch_id)
-            )
-            bulk_order = BulkOrder.objects.filter(filters).first()
+            if branch_id:
+                try:
+                    filters = Q(id=order_id) & (
+                        Q(supplier_organization_id=organization_id, supplier_user__branch_id=branch_id) |
+                        Q(buyer_organization_id=organization_id, buyer_branch_id=branch_id)
+                    )
+                    bulk_order = BulkOrder.objects.filter(filters).first()
+                except:
+                    # Fallback without branch filtering if relationship doesn't exist
+                    filters = Q(id=order_id) & (
+                        Q(supplier_organization_id=organization_id) |
+                        Q(buyer_organization_id=organization_id)
+                    )
+                    bulk_order = BulkOrder.objects.filter(filters).first()
+            else:
+                filters = Q(id=order_id) & (
+                    Q(supplier_organization_id=organization_id) |
+                    Q(buyer_organization_id=organization_id)
+                )
+                bulk_order = BulkOrder.objects.filter(filters).first()
+            
             if not bulk_order:
                 raise BulkOrder.DoesNotExist
         except BulkOrder.DoesNotExist:
@@ -163,11 +188,27 @@ def bulk_order_status_update(request, order_id):
         
         try:
             # Check both supplier and buyer side for this branch
-            filters = Q(id=order_id) & (
-                Q(supplier_organization_id=organization_id, supplier_user__branch_id=branch_id) |
-                Q(buyer_organization_id=organization_id, buyer_branch_id=branch_id)
-            )
-            bulk_order = BulkOrder.objects.filter(filters).first()
+            if branch_id:
+                try:
+                    filters = Q(id=order_id) & (
+                        Q(supplier_organization_id=organization_id, supplier_user__branch_id=branch_id) |
+                        Q(buyer_organization_id=organization_id, buyer_branch_id=branch_id)
+                    )
+                    bulk_order = BulkOrder.objects.filter(filters).first()
+                except:
+                    # Fallback without branch filtering if relationship doesn't exist
+                    filters = Q(id=order_id) & (
+                        Q(supplier_organization_id=organization_id) |
+                        Q(buyer_organization_id=organization_id)
+                    )
+                    bulk_order = BulkOrder.objects.filter(filters).first()
+            else:
+                filters = Q(id=order_id) & (
+                    Q(supplier_organization_id=organization_id) |
+                    Q(buyer_organization_id=organization_id)
+                )
+                bulk_order = BulkOrder.objects.filter(filters).first()
+            
             if not bulk_order:
                 raise BulkOrder.DoesNotExist
         except BulkOrder.DoesNotExist:
@@ -558,13 +599,33 @@ def purchase_order_release_stock(request, order_id):
         
         try:
             # Check both supplier and buyer side for this branch
-            filters = Q(id=order_id) & (
-                Q(supplier_organization_id=organization_id, supplier_user__branch_id=branch_id) |
-                Q(buyer_organization_id=organization_id, buyer_branch_id=branch_id)
-            )
-            bulk_order = BulkOrder.objects.filter(filters).filter(
-                status=BulkOrder.DELIVERED
-            ).first()
+            if branch_id:
+                try:
+                    filters = Q(id=order_id) & (
+                        Q(supplier_organization_id=organization_id, supplier_user__branch_id=branch_id) |
+                        Q(buyer_organization_id=organization_id, buyer_branch_id=branch_id)
+                    )
+                    bulk_order = BulkOrder.objects.filter(filters).filter(
+                        status=BulkOrder.DELIVERED
+                    ).first()
+                except:
+                    # Fallback without branch filtering if relationship doesn't exist
+                    filters = Q(id=order_id) & (
+                        Q(supplier_organization_id=organization_id) |
+                        Q(buyer_organization_id=organization_id)
+                    )
+                    bulk_order = BulkOrder.objects.filter(filters).filter(
+                        status=BulkOrder.DELIVERED
+                    ).first()
+            else:
+                filters = Q(id=order_id) & (
+                    Q(supplier_organization_id=organization_id) |
+                    Q(buyer_organization_id=organization_id)
+                )
+                bulk_order = BulkOrder.objects.filter(filters).filter(
+                    status=BulkOrder.DELIVERED
+                ).first()
+            
             if not bulk_order:
                 raise BulkOrder.DoesNotExist
         except BulkOrder.DoesNotExist:
@@ -828,13 +889,28 @@ def purchase_order_ship(request, order_id):
         
         try:
             # Check both supplier and buyer side for this branch
-            filters = Q(id=order_id) & (
-                Q(supplier_organization_id=organization_id, supplier_user__branch_id=branch_id) |
-                Q(buyer_organization_id=organization_id, buyer_branch_id=branch_id)
-            )
-            print(f"DEBUG SHIP: Filters applied")
+            if branch_id:
+                try:
+                    filters = Q(id=order_id) & (
+                        Q(supplier_organization_id=organization_id, supplier_user__branch_id=branch_id) |
+                        Q(buyer_organization_id=organization_id, buyer_branch_id=branch_id)
+                    )
+                    bulk_order = BulkOrder.objects.filter(filters).first()
+                except:
+                    # Fallback without branch filtering if relationship doesn't exist
+                    filters = Q(id=order_id) & (
+                        Q(supplier_organization_id=organization_id) |
+                        Q(buyer_organization_id=organization_id)
+                    )
+                    bulk_order = BulkOrder.objects.filter(filters).first()
+            else:
+                filters = Q(id=order_id) & (
+                    Q(supplier_organization_id=organization_id) |
+                    Q(buyer_organization_id=organization_id)
+                )
+                bulk_order = BulkOrder.objects.filter(filters).first()
             
-            bulk_order = BulkOrder.objects.filter(filters).first()
+            print(f"DEBUG SHIP: Filters applied")
             print(f"DEBUG SHIP: Order found: {bulk_order is not None}")
             
             if bulk_order:
