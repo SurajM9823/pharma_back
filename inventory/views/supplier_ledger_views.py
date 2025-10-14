@@ -733,22 +733,101 @@ def supplier_transactions_by_name(request, supplier_name):
         # Handle custom supplier names (format: custom_Supplier_Name)
         if supplier_name.startswith('custom_'):
             actual_supplier_name = supplier_name.replace('custom_', '').replace('_', ' ')
-            # Create a new request with supplier_name parameter
-            from django.http import QueryDict
-            new_request = request
-            new_request.GET = QueryDict(f'supplier_name={actual_supplier_name}')
-            return supplier_ledger_detail_by_name(new_request)
+            # Get stock management data directly
+            stock_data = get_custom_supplier_data(actual_supplier_name, organization_id, branch_id)
+            
+            response_data = {
+                'summary': {
+                    'total_credit': stock_data['total_credit'],
+                    'pending_credit': stock_data['total_credit'],
+                    'cleared_credit': stock_data['total_paid'],
+                    'total_purchases': stock_data['total_purchases'],
+                    'total_paid': stock_data['total_paid']
+                },
+                'transactions': stock_data['transactions']
+            }
+            
+            return Response(response_data)
         
         # Handle regular supplier names - try to find by ID first
         try:
             supplier_id = int(supplier_name)
             return supplier_ledger_detail(request, supplier_id)
         except ValueError:
-            # If not a number, treat as name
-            from django.http import QueryDict
-            new_request = request
-            new_request.GET = QueryDict(f'supplier_name={supplier_name}')
-            return supplier_ledger_detail_by_name(new_request)
+            # If not a number, treat as name - get data directly
+            stock_data = get_custom_supplier_data(supplier_name, organization_id, branch_id)
+            
+            # Try to find matching user supplier for bulk orders
+            bulk_data = {'total_purchases': 0, 'total_paid': 0, 'total_credit': 0, 'order_count': 0, 'orders': []}
+            try:
+                user_supplier = User.objects.filter(
+                    role='supplier_admin'
+                ).filter(
+                    Q(first_name__icontains=supplier_name) |
+                    Q(last_name__icontains=supplier_name) |
+                    Q(email__icontains=supplier_name)
+                ).first()
+                
+                if not user_supplier:
+                    name_parts = supplier_name.split()
+                    if len(name_parts) >= 2:
+                        user_supplier = User.objects.filter(
+                            role='supplier_admin',
+                            first_name__iexact=name_parts[0],
+                            last_name__iexact=' '.join(name_parts[1:])
+                        ).first()
+                
+                if user_supplier:
+                    bulk_data = get_bulk_order_data(user_supplier.id, organization_id, branch_id)
+            except Exception as e:
+                print(f"Error finding user supplier: {str(e)}")
+            
+            # Combine transactions
+            all_transactions = []
+            processed_refs = set()
+            
+            for txn in stock_data['transactions']:
+                ref_key = f"stock_{txn['reference']}"
+                if ref_key not in processed_refs:
+                    txn['source_type'] = 'stock_management'
+                    all_transactions.append(txn)
+                    processed_refs.add(ref_key)
+            
+            for order in bulk_data['orders']:
+                ref_key = f"bulk_{order['reference']}"
+                if ref_key not in processed_refs:
+                    order['source_type'] = 'bulk_order'
+                    all_transactions.append(order)
+                    processed_refs.add(ref_key)
+            
+            # Sort and recalculate balances
+            all_transactions.sort(key=lambda x: x.get('sort_date', x['date']))
+            running_balance = 0
+            
+            for txn in all_transactions:
+                if txn['transaction_type'] == 'purchase':
+                    running_balance += txn['purchase']
+                else:
+                    running_balance -= txn['payment']
+                txn['balance'] = max(0, running_balance)
+            
+            # Calculate totals
+            total_purchases = stock_data['total_purchases'] + bulk_data['total_purchases']
+            total_paid = stock_data['total_paid'] + bulk_data['total_paid']
+            total_credit = max(0, total_purchases - total_paid)
+            
+            response_data = {
+                'summary': {
+                    'total_credit': total_credit,
+                    'pending_credit': total_credit,
+                    'cleared_credit': total_paid,
+                    'total_purchases': total_purchases,
+                    'total_paid': total_paid
+                },
+                'transactions': sorted(all_transactions, key=lambda x: x.get('sort_date', x['date']), reverse=True)
+            }
+            
+            return Response(response_data)
         
     except Exception as e:
         return Response({'error': str(e)}, status=500)
