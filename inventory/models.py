@@ -439,7 +439,12 @@ class Supplier(models.Model):
     )
 
     # Performance Metrics
-    on_time_delivery_rate = models.DecimalField(max_digits=5, decimal_places=2, default=Decimal(95))
+    on_time_delivery_rate = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=Decimal(95),
+        validators=[MinValueValidator(0)],
+    )
     quality_rating = models.DecimalField(
         max_digits=3,
         decimal_places=1,
@@ -617,7 +622,9 @@ class PurchaseOrderItem(models.Model):
     quantity_received = models.PositiveIntegerField(default=0)
 
     # Pricing
-    unit_cost = models.DecimalField(max_digits=10, decimal_places=2)
+    unit_cost = models.DecimalField(
+        max_digits=10, decimal_places=2, validators=[MinValueValidator(0)]
+    )
     unit_price = models.DecimalField(
         max_digits=10,
         decimal_places=2,
@@ -1281,7 +1288,7 @@ class BulkOrderPayment(models.Model):
     payment_type = models.CharField(max_length=15, choices=PAYMENT_TYPE_CHOICES)
     payment_method = models.CharField(max_length=15, choices=PAYMENT_METHOD_CHOICES)
 
-    amount = models.DecimalField(max_digits=10, decimal_places=2)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, validators=[MinValueValidator(0)])
     payment_date = models.DateTimeField()
     reference_number = models.CharField(max_length=100, blank=True)
     notes = models.TextField(blank=True)
