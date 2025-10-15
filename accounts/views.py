@@ -413,17 +413,9 @@ def users_list(request):
     if request.method == 'POST':
         # Create new user
         try:
-            from .serializers import UserSerializer
-            from django.contrib.auth.hashers import make_password
+            from .serializers import UserCreateSerializer, UserSerializer
             
-            data = request.data.copy()
-            
-            # Hash the password
-            if 'password' in data:
-                data['plain_text_password'] = data['password']
-                data['password'] = make_password(data['password'])
-            
-            serializer = UserSerializer(data=data)
+            serializer = UserCreateSerializer(data=request.data, context={'request': request})
             if serializer.is_valid():
                 user = serializer.save()
                 return Response({
