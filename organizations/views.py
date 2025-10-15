@@ -626,3 +626,273 @@ def create_organization_with_owner(request):
             'organization': OrganizationSerializer(organization).data,
             'message': _('Organization created successfully.')
         }, status=status.HTTP_201_CREATED)
+
+
+# Subscription Management Views
+from .models import SubscriptionPlan, OrganizationSubscription
+from .serializers import SubscriptionPlanSerializer, OrganizationSubscriptionSerializer, SubscriptionStatsSerializer
+
+
+class SubscriptionPlanListView(generics.ListCreateAPIView):
+    """List all subscription plans."""
+    queryset = SubscriptionPlan.objects.filter(is_active=True)
+    serializer_class = SubscriptionPlanSerializer
+    
+    def get_permissions(self):
+        if self.request.method == 'GET':
+            return [permissions.AllowAny()]
+        return [permissions.IsAuthenticated()]
+    
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        plan = serializer.save()
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class OrganizationSubscriptionListView(generics.ListCreateAPIView):
+    """List and create organization subscriptions."""
+    serializer_class = OrganizationSubscriptionSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['status', 'plan', 'auto_renew']
+    search_fields = ['organization__name', 'plan__display_name']
+    ordering_fields = ['created_at', 'end_date']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        """Filter subscriptions based on user permissions."""
+        user = self.request.user
+        
+        if user.role == 'super_admin':
+            return OrganizationSubscription.objects.all()
+        elif user.role == 'pharmacy_owner':
+            return OrganizationSubscription.objects.filter(organization__owner=user)
+        else:
+            return OrganizationSubscription.objects.filter(organization_id=user.organization_id)
+
+
+class OrganizationSubscriptionDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Organization subscription detail view."""
+    serializer_class = OrganizationSubscriptionSerializer
+
+    def get_queryset(self):
+        """Filter subscriptions based on user permissions."""
+        user = self.request.user
+        
+        if user.role == 'super_admin':
+            return OrganizationSubscription.objects.all()
+        elif user.role == 'pharmacy_owner':
+            return OrganizationSubscription.objects.filter(organization__owner=user)
+        else:
+            return OrganizationSubscription.objects.filter(organization_id=user.organization_id)
+
+
+@api_view(['GET'])
+@permission_classes([permissions.IsAuthenticated])
+def subscription_stats(request):
+    """Get subscription statistics for admin dashboard."""
+    if request.user.role != 'super_admin':
+        return Response({
+            'error': _('Insufficient permissions to view subscription statistics.')
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    from django.utils import timezone
+    from django.db.models import Sum, Count
+    from decimal import Decimal
+
+    # Basic stats
+    total_orgs = Organization.objects.count()
+    active_subscriptions = OrganizationSubscription.objects.filter(
+        status='active',
+        end_date__gt=timezone.now()
+    ).count()
+
+    # Revenue calculation
+    plan_prices = {
+        'trial': Decimal('0'),
+        'basic': Decimal('5000'),
+        'professional': Decimal('15000'),
+        'enterprise': Decimal('50000')
+    }
+
+    monthly_revenue = Decimal('0')
+    subscription_distribution = {}
+    
+    for plan_name, price in plan_prices.items():
+        count = OrganizationSubscription.objects.filter(
+            plan__name=plan_name,
+            status='active',
+            end_date__gt=timezone.now()
+        ).count()
+        subscription_distribution[plan_name] = count
+        monthly_revenue += count * price
+
+    # Growth calculation (this month vs last month)
+    now = timezone.now()
+    current_month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    if now.month == 1:
+        last_month_start = current_month_start.replace(year=now.year-1, month=12)
+    else:
+        last_month_start = current_month_start.replace(month=now.month-1)
+    
+    current_month_subs = OrganizationSubscription.objects.filter(
+        created_at__gte=current_month_start
+    ).count()
+    
+    last_month_subs = OrganizationSubscription.objects.filter(
+        created_at__gte=last_month_start,
+        created_at__lt=current_month_start
+    ).count()
+    
+    growth_rate = 0
+    if last_month_subs > 0:
+        growth_rate = ((current_month_subs - last_month_subs) / last_month_subs) * 100
+
+    # Recent subscriptions
+    recent_subscriptions = OrganizationSubscription.objects.order_by('-created_at')[:5]
+
+    stats = {
+        'total_organizations': total_orgs,
+        'active_subscriptions': active_subscriptions,
+        'monthly_revenue': monthly_revenue,
+        'growth_rate': round(growth_rate, 1),
+        'subscription_distribution': subscription_distribution,
+        'recent_subscriptions': OrganizationSubscriptionSerializer(recent_subscriptions, many=True).data
+    }
+
+    return Response(stats)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def create_subscription(request):
+    """Create a new subscription for an organization."""
+    if request.user.role not in ['super_admin', 'pharmacy_owner']:
+        return Response({
+            'error': _('Insufficient permissions to create subscriptions.')
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    from django.utils import timezone
+    from datetime import timedelta
+
+    data = request.data.copy()
+    
+    # Set default dates if not provided
+    if not data.get('start_date'):
+        data['start_date'] = timezone.now()
+    
+    if not data.get('end_date'):
+        # Default to 1 month from start date
+        start_date = timezone.datetime.fromisoformat(data['start_date'].replace('Z', '+00:00'))
+        data['end_date'] = start_date + timedelta(days=30)
+
+    serializer = OrganizationSubscriptionSerializer(data=data)
+    serializer.is_valid(raise_exception=True)
+    subscription = serializer.save()
+
+    return Response({
+        'subscription': OrganizationSubscriptionSerializer(subscription).data,
+        'message': _('Subscription created successfully.')
+    }, status=status.HTTP_201_CREATED)
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def update_organization_plan(request, organization_id):
+    """Update organization's subscription plan."""
+    if request.user.role != 'super_admin':
+        return Response({
+            'error': _('Only super admin can update subscription plans.')
+        }, status=status.HTTP_403_FORBIDDEN)
+
+    try:
+        organization = Organization.objects.get(id=organization_id)
+    except Organization.DoesNotExist:
+        return Response({
+            'error': _('Organization not found.')
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    plan_name = request.data.get('plan')
+    if not plan_name:
+        return Response({
+            'error': _('Plan name is required.')
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        plan = SubscriptionPlan.objects.get(name=plan_name, is_active=True)
+    except SubscriptionPlan.DoesNotExist:
+        return Response({
+            'error': _('Invalid plan selected.')
+        }, status=status.HTTP_400_BAD_REQUEST)
+
+    # Update organization subscription plan
+    organization.subscription_plan = plan_name
+    organization.save()
+
+    # Create or update subscription record
+    from django.utils import timezone
+    from datetime import timedelta
+
+    subscription, created = OrganizationSubscription.objects.get_or_create(
+        organization=organization,
+        defaults={
+            'plan': plan,
+            'status': 'active',
+            'start_date': timezone.now(),
+            'end_date': timezone.now() + timedelta(days=30),
+            'auto_renew': True
+        }
+    )
+
+    if not created:
+        subscription.plan = plan
+        subscription.status = 'active'
+        subscription.save()
+
+    return Response({
+        'organization': OrganizationSerializer(organization).data,
+        'subscription': OrganizationSubscriptionSerializer(subscription).data,
+        'message': _('Subscription plan updated successfully.')
+    })
+
+class SubscriptionPlanDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """Plan detail view for edit/delete operations."""
+    queryset = SubscriptionPlan.objects.all().order_by('-created_at')
+    serializer_class = SubscriptionPlanSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+        return Response(serializer.data)
+    
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        instance.is_active = False
+        instance.save()
+        return Response({'message': _('Plan deactivated successfully.')})
+
+
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def toggle_plan_status(request, plan_id):
+    """Activate/Deactivate subscription plan."""
+    try:
+        plan = SubscriptionPlan.objects.get(id=plan_id)
+    except SubscriptionPlan.DoesNotExist:
+        return Response({
+            'error': _('Plan not found.')
+        }, status=status.HTTP_404_NOT_FOUND)
+
+    plan.is_active = not plan.is_active
+    plan.save()
+    
+    status_text = 'activated' if plan.is_active else 'deactivated'
+    return Response({
+        'plan': SubscriptionPlanSerializer(plan).data,
+        'message': _(f'Plan {status_text} successfully.')
+    })

@@ -357,3 +357,84 @@ class OrganizationSettings(models.Model):
 
     def __str__(self):
         return f"Settings for {self.organization.name}"
+
+
+class SubscriptionPlan(models.Model):
+    """Subscription plan model."""
+    
+    TRIAL = 'trial'
+    BASIC = 'basic'
+    PROFESSIONAL = 'professional'
+    ENTERPRISE = 'enterprise'
+    
+    PLAN_CHOICES = [
+        (TRIAL, 'Trial'),
+        (BASIC, 'Basic'),
+        (PROFESSIONAL, 'Professional'),
+        (ENTERPRISE, 'Enterprise'),
+    ]
+    
+    name = models.CharField(max_length=50, choices=PLAN_CHOICES)
+    display_name = models.CharField(max_length=100)
+    price = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    currency = models.CharField(max_length=3, default='NPR')
+    billing_cycle = models.CharField(max_length=20, default='monthly')
+    
+    # Features
+    max_users = models.IntegerField(null=True, blank=True)
+    max_organizations = models.IntegerField(null=True, blank=True)
+    max_branches = models.IntegerField(null=True, blank=True)
+    features = models.JSONField(default=list)
+    pricing_tiers = models.JSONField(default=list, help_text="List of pricing tiers with cycle and price")
+    
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['price']
+    
+    def __str__(self):
+        return self.display_name
+
+
+class OrganizationSubscription(models.Model):
+    """Organization subscription model."""
+    
+    ACTIVE = 'active'
+    INACTIVE = 'inactive'
+    EXPIRED = 'expired'
+    CANCELLED = 'cancelled'
+    
+    STATUS_CHOICES = [
+        (ACTIVE, 'Active'),
+        (INACTIVE, 'Inactive'),
+        (EXPIRED, 'Expired'),
+        (CANCELLED, 'Cancelled'),
+    ]
+    
+    organization = models.OneToOneField(
+        Organization, 
+        on_delete=models.CASCADE, 
+        related_name='subscription'
+    )
+    plan = models.ForeignKey(SubscriptionPlan, on_delete=models.CASCADE)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=ACTIVE)
+    
+    start_date = models.DateTimeField()
+    end_date = models.DateTimeField()
+    auto_renew = models.BooleanField(default=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"{self.organization.name} - {self.plan.display_name}"
+    
+    @property
+    def is_active(self):
+        from django.utils import timezone
+        return self.status == self.ACTIVE and self.end_date > timezone.now()

@@ -306,17 +306,6 @@ class SubscriptionPlanSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
-        extra_kwargs = {'price': {'required': False}}
-    
-    def create(self, validated_data):
-        if 'pricing_tiers' in validated_data and validated_data['pricing_tiers']:
-            validated_data['price'] = float(validated_data['pricing_tiers'][0]['price'])
-        return super().create(validated_data)
-    
-    def update(self, instance, validated_data):
-        if 'pricing_tiers' in validated_data and validated_data['pricing_tiers']:
-            validated_data['price'] = float(validated_data['pricing_tiers'][0]['price'])
-        return super().update(instance, validated_data)
 
 
 class OrganizationSubscriptionSerializer(serializers.ModelSerializer):
@@ -343,3 +332,24 @@ class SubscriptionStatsSerializer(serializers.Serializer):
     growth_rate = serializers.FloatField()
     subscription_distribution = serializers.DictField()
     recent_subscriptions = OrganizationSubscriptionSerializer(many=True)
+    
+    def create(self, validated_data):
+        if 'pricing_tiers' in validated_data and validated_data['pricing_tiers']:
+            validated_data['price'] = float(validated_data['pricing_tiers'][0]['price'])
+        return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        if 'pricing_tiers' in validated_data and validated_data['pricing_tiers']:
+            validated_data['price'] = float(validated_data['pricing_tiers'][0]['price'])
+        return super().update(instance, validated_data)
+        extra_kwargs = {'price': {'required': False}}
+    
+    def create(self, validated_data):
+        if 'pricing_tiers' in validated_data and validated_data['pricing_tiers']:
+            validated_data['price'] = float(validated_data['pricing_tiers'][0]['price'])
+        return super().create(validated_data)
+    
+    def update(self, instance, validated_data):
+        if 'pricing_tiers' in validated_data and validated_data['pricing_tiers']:
+            validated_data['price'] = float(validated_data['pricing_tiers'][0]['price'])
+        return super().update(instance, validated_data)
