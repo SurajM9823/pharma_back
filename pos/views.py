@@ -12,6 +12,9 @@ from .models import Sale, SaleItem, Prescription, Payment, Return, POSSettings
 from patients.models import Patient
 from inventory.models import InventoryItem, Product
 from organizations.models import Branch, Organization
+from django.db.models import Sum, Count, Avg, Q, F
+from datetime import datetime, timedelta
+from .manager_dashboard_views import *
 
 
 @api_view(['POST'])
@@ -46,11 +49,15 @@ def allocate_stock(request):
         allocations = []
         remaining_quantity = quantity
         
+        print(f"DEBUG: allocate_stock - Need to allocate {quantity} units")
+        
         for item in inventory_items:
             if remaining_quantity <= 0:
                 break
                 
             allocated_quantity = min(item.quantity, remaining_quantity)
+            print(f"DEBUG: allocate_stock - Allocating {allocated_quantity} from batch {item.batch_number} (available: {item.quantity})")
+            
             allocations.append({
                 'inventory_item_id': item.id,
                 'batch_number': item.batch_number,
@@ -61,7 +68,9 @@ def allocate_stock(request):
             })
             
             remaining_quantity -= allocated_quantity
+            print(f"DEBUG: allocate_stock - Remaining to allocate: {remaining_quantity}")
         
+        print(f"DEBUG: allocate_stock - Final allocations: {allocations}")
         return Response({
             'allocations': allocations,
             'total_allocated': quantity,
@@ -292,20 +301,86 @@ def complete_sale(request):
                 
                 sale.save()
                 
-                # Reduce stock for all items
+                # Reduce stock for all items - stock was already allocated during cart operations
+                print(f"DEBUG: Starting stock reduction for sale {sale.id}")
+                print(f"DEBUG: Sale items count: {sale.items.count()}")
+
                 for sale_item in sale.items.all():
-                    for batch in sale_item.allocated_batches:
-                        inventory_item = get_object_or_404(InventoryItem, id=batch['inventory_item_id'])
-                        allocated_qty = batch['allocated_quantity']
+                    print(f"DEBUG: Processing sale item: {sale_item.product.name}, quantity: {sale_item.quantity}")
+                    print(f"DEBUG: Allocated batches: {sale_item.allocated_batches}")
+                    
+                    # Check if allocated_batches is empty or None
+                    if not sale_item.allocated_batches:
+                        print(f"DEBUG: No allocated batches found for {sale_item.product.name}, using FIFO allocation")
+                        # If no allocated batches, do FIFO allocation now
+                        inventory_items = InventoryItem.objects.filter(
+                            product_id=sale_item.product.id,
+                            branch_id=sale.branch_id,
+                            quantity__gt=0,
+                            is_active=True
+                        ).order_by('expiry_date', 'created_at')
                         
-                        if inventory_item.quantity >= allocated_qty:
-                            inventory_item.quantity -= allocated_qty
-                            inventory_item.save()
-                        else:
-                            raise ValueError(f"Insufficient stock in batch {batch['batch_number']}")
+                        remaining_quantity = sale_item.quantity
+                        for item in inventory_items:
+                            if remaining_quantity <= 0:
+                                break
+                            
+                            allocated_quantity = min(item.quantity, remaining_quantity)
+                            print(f"DEBUG: FIFO - Reducing {allocated_quantity} from batch {item.batch_number} (current: {item.quantity})")
+                            
+                            if item.quantity >= allocated_quantity:
+                                item.quantity -= allocated_quantity
+                                item.save()
+                                remaining_quantity -= allocated_quantity
+                                print(f"DEBUG: FIFO - Stock reduced successfully. New quantity: {item.quantity}")
+                            else:
+                                print(f"DEBUG: FIFO - ERROR - Insufficient stock in batch {item.batch_number}")
+                                raise ValueError(f"Insufficient stock in batch {item.batch_number}")
+                        
+                        if remaining_quantity > 0:
+                            print(f"DEBUG: FIFO - ERROR - Could not allocate all stock. Remaining: {remaining_quantity}")
+                            raise ValueError(f"Insufficient total stock for {sale_item.product.name}")
+                    else:
+                        # Use existing allocated batches
+                        total_allocated = sum(batch['allocated_quantity'] for batch in sale_item.allocated_batches)
+                        print(f"DEBUG: Sale item {sale_item.product.name} - allocated: {total_allocated}, required: {sale_item.quantity}")
+
+                        # Verify total allocated matches sale quantity
+                        if total_allocated != sale_item.quantity:
+                            print(f"DEBUG: ERROR - Stock allocation mismatch for {sale_item.product.name}: allocated {total_allocated}, required {sale_item.quantity}")
+                            raise ValueError(f"Stock allocation mismatch for {sale_item.product.name}: allocated {total_allocated}, required {sale_item.quantity}")
+
+                        # Actually reduce stock now
+                        for batch in sale_item.allocated_batches:
+                            print(f"DEBUG: Processing batch: {batch}")
+                            inventory_item = get_object_or_404(InventoryItem, id=batch['inventory_item_id'])
+                            allocated_qty = batch['allocated_quantity']
+
+                            print(f"DEBUG: Reducing stock for {sale_item.product.name} batch {batch['batch_number']}: current={inventory_item.quantity}, reducing={allocated_qty}")
+
+                            if inventory_item.quantity >= allocated_qty:
+                                inventory_item.quantity -= allocated_qty
+                                inventory_item.save()
+                                print(f"DEBUG: Stock reduced successfully. New quantity: {inventory_item.quantity}")
+                            else:
+                                print(f"DEBUG: ERROR - Insufficient stock in batch {batch['batch_number']}: has {inventory_item.quantity}, need {allocated_qty}")
+                                raise ValueError(f"Insufficient stock in batch {batch['batch_number']}")
                 
-                # Create payment record
-                if paid_amount > 0:
+                # Handle split payments or single payment
+                split_payments = data.get('split_payments')
+                if split_payments and len(split_payments) > 0:
+                    # Create multiple payment records for split payments
+                    for split_payment in split_payments:
+                        if split_payment.get('amount') and float(split_payment['amount']) > 0:
+                            Payment.objects.create(
+                                sale=sale,
+                                amount=float(split_payment['amount']),
+                                payment_method=split_payment.get('method', 'cash'),
+                                reference_number=split_payment.get('transaction_id', ''),
+                                received_by=request.user
+                            )
+                elif paid_amount > 0:
+                    # Single payment record
                     Payment.objects.create(
                         sale=sale,
                         amount=paid_amount,
@@ -320,7 +395,7 @@ def complete_sale(request):
                 
                 # Get POS settings for receipt
                 try:
-                    pos_settings = POSSettings.objects.get(organization_id=org_id, branch_id=branch_id)
+                    pos_settings = POSSettings.objects.get(organization_id=sale.organization_id, branch_id=sale.branch_id)
                     business_name = pos_settings.business_name or organization.name
                     business_address = pos_settings.business_address or getattr(organization, 'address', '')
                     business_phone = pos_settings.business_phone or getattr(organization, 'phone', '')
@@ -489,19 +564,61 @@ def create_direct_sale(request):
             allocated_batches=batch_info
         )
         
-        # Reduce stock
-        for batch in batch_info:
-            inventory_item = get_object_or_404(InventoryItem, id=batch['inventory_item_id'])
-            allocated_qty = batch['allocated_quantity']
+        # Reduce stock - handle both allocated batches and FIFO fallback
+        if batch_info:
+            # Use allocated batches
+            for batch in batch_info:
+                inventory_item = get_object_or_404(InventoryItem, id=batch['inventory_item_id'])
+                allocated_qty = batch['allocated_quantity']
+                
+                if inventory_item.quantity >= allocated_qty:
+                    inventory_item.quantity -= allocated_qty
+                    inventory_item.save()
+                else:
+                    raise ValueError(f"Insufficient stock in batch {batch['batch_number']}")
+        else:
+            # FIFO fallback if no batch info
+            print(f"DEBUG: No batch info for {product.name}, using FIFO allocation")
+            inventory_items = InventoryItem.objects.filter(
+                product_id=product.id,
+                branch_id=branch_id,
+                quantity__gt=0,
+                is_active=True
+            ).order_by('expiry_date', 'created_at')
             
-            if inventory_item.quantity >= allocated_qty:
-                inventory_item.quantity -= allocated_qty
-                inventory_item.save()
-            else:
-                raise ValueError(f"Insufficient stock in batch {batch['batch_number']}")
+            remaining_quantity = item_data['quantity']
+            for item in inventory_items:
+                if remaining_quantity <= 0:
+                    break
+                
+                allocated_quantity = min(item.quantity, remaining_quantity)
+                print(f"DEBUG: FIFO - Reducing {allocated_quantity} from batch {item.batch_number}")
+                
+                if item.quantity >= allocated_quantity:
+                    item.quantity -= allocated_quantity
+                    item.save()
+                    remaining_quantity -= allocated_quantity
+                else:
+                    raise ValueError(f"Insufficient stock in batch {item.batch_number}")
+            
+            if remaining_quantity > 0:
+                raise ValueError(f"Insufficient total stock for {product.name}")
     
-    # Create payment record
-    if paid_amount > 0:
+    # Handle split payments or single payment
+    split_payments = data.get('split_payments')
+    if split_payments and len(split_payments) > 0:
+        # Create multiple payment records for split payments
+        for split_payment in split_payments:
+            if split_payment.get('amount') and float(split_payment['amount']) > 0:
+                Payment.objects.create(
+                    sale=sale,
+                    amount=float(split_payment['amount']),
+                    payment_method=split_payment.get('method', 'cash'),
+                    reference_number=split_payment.get('transaction_id', ''),
+                    received_by=request.user
+                )
+    elif paid_amount > 0:
+        # Single payment record
         Payment.objects.create(
             sale=sale,
             amount=paid_amount,
@@ -525,6 +642,8 @@ def create_sale(request):
     try:
         with transaction.atomic():
             data = request.data
+            print(f"DEBUG: create_sale called")
+            print(f"DEBUG: Items in request: {data.get('items', [])}")
             
             # Get organization and branch IDs
             org_id = getattr(request.user, 'organization_id', None)
@@ -595,30 +714,124 @@ def create_sale(request):
             )
             
             items = data.get('items', [])
+            print(f"DEBUG: create_sale - Processing {len(items)} items")
+            
             for item_data in items:
                 product = get_object_or_404(Product, id=item_data['medicine_id'])
                 batch_info = item_data.get('batch_info', [])
+                quantity = item_data['quantity']
+                
+                print(f"DEBUG: create_sale - Processing {product.name}, quantity: {quantity}")
+                print(f"DEBUG: create_sale - Batch info: {batch_info}")
                 
                 SaleItem.objects.create(
                     sale=sale,
                     product=product,
-                    quantity=item_data['quantity'],
+                    quantity=quantity,
                     unit_price=item_data['price'],
                     batch_number=item_data.get('batch', ''),
                     allocated_batches=batch_info
                 )
                 
-                for batch in batch_info:
-                    inventory_item = get_object_or_404(InventoryItem, id=batch['inventory_item_id'])
-                    allocated_qty = batch['allocated_quantity']
+                # Reduce stock - handle both allocated batches and FIFO fallback
+                if batch_info:
+                    # Check if allocated quantity matches sale quantity
+                    total_allocated = sum(batch['allocated_quantity'] for batch in batch_info)
+                    print(f"DEBUG: create_sale - Total allocated: {total_allocated}, Sale quantity: {quantity}")
                     
-                    if inventory_item.quantity >= allocated_qty:
-                        inventory_item.quantity -= allocated_qty
-                        inventory_item.save()
+                    if total_allocated != quantity:
+                        print(f"DEBUG: create_sale - Allocation mismatch! Using FIFO for {product.name}")
+                        # Use FIFO fallback when allocation doesn't match
+                        inventory_items = InventoryItem.objects.filter(
+                            product_id=product.id,
+                            branch_id=branch_id,
+                            quantity__gt=0,
+                            is_active=True
+                        ).order_by('expiry_date', 'created_at')
+                        
+                        remaining_quantity = quantity
+                        for item in inventory_items:
+                            if remaining_quantity <= 0:
+                                break
+                            
+                            allocated_quantity = min(item.quantity, remaining_quantity)
+                            print(f"DEBUG: create_sale - FIFO reducing {allocated_quantity} from batch {item.batch_number}")
+                            
+                            if item.quantity >= allocated_quantity:
+                                item.quantity -= allocated_quantity
+                                item.save()
+                                remaining_quantity -= allocated_quantity
+                                print(f"DEBUG: create_sale - FIFO reduced. New qty: {item.quantity}, remaining: {remaining_quantity}")
+                            else:
+                                raise ValueError(f"Insufficient stock in batch {item.batch_number}")
+                        
+                        if remaining_quantity > 0:
+                            raise ValueError(f"Insufficient total stock for {product.name}")
                     else:
-                        raise ValueError(f"Insufficient stock in batch {batch['batch_number']}")
+                        print(f"DEBUG: create_sale - Using allocated batches for {product.name}")
+                        # Use allocated batches
+                        for batch in batch_info:
+                            inventory_item = get_object_or_404(InventoryItem, id=batch['inventory_item_id'])
+                            allocated_qty = batch['allocated_quantity']
+                            print(f"DEBUG: create_sale - Reducing {allocated_qty} from batch {batch['batch_number']} (current: {inventory_item.quantity})")
+
+                            if inventory_item.quantity >= allocated_qty:
+                                inventory_item.quantity -= allocated_qty
+                                inventory_item.save()
+                                print(f"DEBUG: create_sale - Stock reduced. New quantity: {inventory_item.quantity}")
+                            else:
+                                print(f"DEBUG: create_sale - ERROR - Insufficient stock")
+                                raise ValueError(f"Insufficient stock in batch {batch['batch_number']}")
+                else:
+                    # FIFO fallback if no batch info
+                    print(f"DEBUG: create_sale - No batch info for {product.name}, using FIFO allocation")
+                    inventory_items = InventoryItem.objects.filter(
+                        product_id=product.id,
+                        branch_id=branch_id,
+                        quantity__gt=0,
+                        is_active=True
+                    ).order_by('expiry_date', 'created_at')
+                    
+                    print(f"DEBUG: create_sale - Found {inventory_items.count()} inventory items for FIFO")
+                    remaining_quantity = quantity
+                    
+                    for item in inventory_items:
+                        if remaining_quantity <= 0:
+                            break
+                        
+                        allocated_quantity = min(item.quantity, remaining_quantity)
+                        print(f"DEBUG: create_sale - FIFO reducing {allocated_quantity} from batch {item.batch_number} (current: {item.quantity})")
+                        
+                        if item.quantity >= allocated_quantity:
+                            item.quantity -= allocated_quantity
+                            item.save()
+                            remaining_quantity -= allocated_quantity
+                            print(f"DEBUG: create_sale - FIFO reduced. New qty: {item.quantity}, remaining: {remaining_quantity}")
+                        else:
+                            print(f"DEBUG: create_sale - FIFO ERROR - Insufficient stock")
+                            raise ValueError(f"Insufficient stock in batch {item.batch_number}")
+                    
+                    if remaining_quantity > 0:
+                        print(f"DEBUG: create_sale - FIFO ERROR - Could not allocate all stock. Remaining: {remaining_quantity}")
+                        raise ValueError(f"Insufficient total stock for {product.name}")
+                
+                print(f"DEBUG: create_sale - Completed stock reduction for {product.name}")
             
-            if paid_amount > 0:
+            # Handle split payments or single payment
+            split_payments = data.get('split_payments')
+            if split_payments and len(split_payments) > 0:
+                # Create multiple payment records for split payments
+                for split_payment in split_payments:
+                    if split_payment.get('amount') and float(split_payment['amount']) > 0:
+                        Payment.objects.create(
+                            sale=sale,
+                            amount=float(split_payment['amount']),
+                            payment_method=split_payment.get('method', 'cash'),
+                            reference_number=split_payment.get('transaction_id', ''),
+                            received_by=request.user
+                        )
+            elif paid_amount > 0:
+                # Single payment record
                 Payment.objects.create(
                     sale=sale,
                     amount=paid_amount,
@@ -698,6 +911,7 @@ def create_sale(request):
                 'payment_method': sale.payment_method
             }
             
+            print(f"DEBUG: create_sale - Sale completed successfully: {sale.sale_number}")
             return Response({
                 'success': True,
                 'sale_id': sale.id,
@@ -707,6 +921,9 @@ def create_sale(request):
             })
             
     except Exception as e:
+        print(f"DEBUG: create_sale ERROR: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return Response({'error': str(e)}, status=500)
 
 
@@ -768,13 +985,20 @@ def get_sales(request):
         branch_id = request.user.branch_id
         if not branch_id:
             return Response({'error': 'User not assigned to any branch'}, status=400)
-        
+
         # Only get completed sales
-        sales = Sale.objects.filter(
+        sales_query = Sale.objects.filter(
             branch_id=branch_id,
             organization_id=request.user.organization_id,
             status='completed'
-        ).order_by('-created_at')
+        )
+
+        # Filter by patient_id if provided
+        patient_id = request.GET.get('patient_id')
+        if patient_id:
+            sales_query = sales_query.filter(patient_id=patient_id)
+
+        sales = sales_query.order_by('-created_at')
         
         sales_data = []
         for sale in sales:
@@ -784,8 +1008,31 @@ def get_sales(request):
                 'amount': float(payment.amount),
                 'method': payment.payment_method,
                 'reference': payment.reference_number,
-                'date': payment.payment_date.strftime('%Y-%m-%d %I:%M %p')
+                'date': payment.payment_date.strftime('%Y-%m-%d %I:%M %p'),
+                'receivedBy': payment.received_by.get_full_name() if payment.received_by else 'Unknown'
             } for payment in payments]
+            
+            # Calculate payment breakdown by method
+            payment_summary = {
+                'cash': sum(p['amount'] for p in payment_details if p['method'] == 'cash'),
+                'online': sum(p['amount'] for p in payment_details if p['method'] == 'online'),
+                'card': sum(p['amount'] for p in payment_details if p['method'] == 'card')
+            }
+            
+            # Create payment breakdown for display
+            payment_breakdown = []
+            if payment_summary['cash'] > 0:
+                payment_breakdown.append(f"Cash: NPR {payment_summary['cash']:.2f}")
+            if payment_summary['online'] > 0:
+                payment_breakdown.append(f"Online: NPR {payment_summary['online']:.2f}")
+            if payment_summary['card'] > 0:
+                payment_breakdown.append(f"Card: NPR {payment_summary['card']:.2f}")
+            if sale.credit_amount > 0:
+                payment_breakdown.append(f"Credit: NPR {sale.credit_amount:.2f}")
+            
+            # Determine if it's a split payment
+            payment_methods_used = len([method for method, amount in payment_summary.items() if amount > 0])
+            is_split_payment = payment_methods_used > 1 or (payment_methods_used >= 1 and sale.credit_amount > 0)
             
             sales_data.append({
                 'id': sale.sale_number,
@@ -807,13 +1054,16 @@ def get_sales(request):
                 'total': float(sale.total_amount),
                 'discountAmount': float(sale.discount_amount),
                 'taxAmount': float(sale.tax_amount),
-                'paymentMethod': sale.payment_method,
+                'paymentMethod': 'Split Payment' if is_split_payment else sale.payment_method,
                 'paidAmount': float(sale.amount_paid),
                 'creditAmount': float(sale.credit_amount),
                 'changeAmount': float(sale.change_amount),
                 'completedAt': sale.created_at.strftime('%Y-%m-%d %I:%M %p'),
                 'completedBy': sale.completed_by.get_full_name() if sale.completed_by else 'Unknown',
                 'payments': payment_details,
+                'paymentSummary': payment_summary,
+                'paymentBreakdown': payment_breakdown,
+                'isSplitPayment': is_split_payment,
                 'status': 'credit' if sale.credit_amount > 0 else 'completed'
             })
         
@@ -825,10 +1075,77 @@ def get_sales(request):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
+def patient_credit_history(request):
+    """Get credit history for a specific patient."""
+    try:
+        patient_id = request.GET.get('patient_id')
+        if not patient_id:
+            return Response({'error': 'patient_id parameter is required'}, status=400)
+
+        # Get sales with outstanding credit for this patient
+        credit_sales = Sale.objects.filter(
+            patient_id=patient_id,
+            organization_id=request.user.organization_id,
+            credit_amount__gt=0,
+            status='completed'
+        ).select_related('patient').order_by('-created_at')
+
+        credit_data = []
+        for sale in credit_sales:
+            credit_data.append({
+                'id': sale.id,
+                'sale_number': sale.sale_number,
+                'total_amount': float(sale.total_amount),
+                'amount_paid': float(sale.amount_paid),
+                'credit_amount': float(sale.credit_amount),
+                'created_at': sale.created_at.isoformat(),
+                'payment_method': sale.payment_method,
+                'transaction_id': sale.transaction_id,
+                'items': [{
+                    'product_name': item.product.name,
+                    'quantity': item.quantity,
+                    'unit_price': float(item.unit_price),
+                    'total': float(item.quantity * item.unit_price)
+                } for item in sale.items.all()]
+            })
+
+        return Response(credit_data)
+
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
 def get_sale_detail(request, sale_id):
     """Get detailed sale information."""
     try:
         sale = get_object_or_404(Sale, sale_number=sale_id, organization_id=request.user.organization_id)
+        
+        # Get all payment records for this sale
+        payments = sale.payments.all().order_by('payment_date')
+        payment_details = []
+        
+        for payment in payments:
+            payment_details.append({
+                'id': payment.id,
+                'amount': float(payment.amount),
+                'method': payment.payment_method,
+                'reference': payment.reference_number or '',
+                'date': payment.payment_date.strftime('%Y-%m-%d %I:%M %p'),
+                'receivedBy': payment.received_by.get_full_name() if payment.received_by else 'Unknown'
+            })
+        
+        # If no payment records exist, create from sale data
+        if not payment_details and sale.amount_paid > 0:
+            payment_details.append({
+                'id': 0,
+                'amount': float(sale.amount_paid),
+                'method': sale.payment_method,
+                'reference': sale.transaction_id or '',
+                'date': sale.created_at.strftime('%Y-%m-%d %I:%M %p'),
+                'receivedBy': sale.completed_by.get_full_name() if sale.completed_by else 'Unknown'
+            })
         
         sale_data = {
             'id': sale.sale_number,
@@ -854,7 +1171,20 @@ def get_sale_detail(request, sale_id):
             'paidAmount': float(sale.amount_paid),
             'creditAmount': float(sale.credit_amount),
             'completedAt': sale.created_at.strftime('%Y-%m-%d %I:%M %p'),
-            'status': 'credit' if sale.credit_amount > 0 else 'completed'
+            'completedBy': sale.completed_by.get_full_name() if sale.completed_by else 'Unknown',
+            'status': 'credit' if sale.credit_amount > 0 else 'completed',
+            'payments': payment_details,
+            'totalPayments': len(payment_details),
+            'paymentSummary': {
+                'cash': sum(p['amount'] for p in payment_details if p['method'] == 'cash'),
+                'online': sum(p['amount'] for p in payment_details if p['method'] == 'online'),
+                'card': sum(p['amount'] for p in payment_details if p['method'] == 'card')
+            },
+            'paymentBreakdown': [p for p in [
+                {'method': 'Cash', 'amount': sum(p['amount'] for p in payment_details if p['method'] == 'cash')},
+                {'method': 'Online', 'amount': sum(p['amount'] for p in payment_details if p['method'] == 'online')},
+                {'method': 'Card', 'amount': sum(p['amount'] for p in payment_details if p['method'] == 'card')}
+            ] if p['amount'] > 0]
         }
         
         return Response(sale_data)
@@ -1135,6 +1465,374 @@ def validate_stock_before_sale(request):
             'items': validation_results
         })
         
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def pharmacy_dashboard_stats(request):
+    """Get pharmacy dashboard statistics for pharmacy owner."""
+    try:
+        print("DEBUG: Starting pharmacy_dashboard_stats")
+        org_id = getattr(request.user, 'organization_id', None)
+        print(f"DEBUG: org_id = {org_id}")
+        if not org_id:
+            print("DEBUG: No organization_id found")
+            return Response({'error': 'User not associated with an organization'}, status=400)
+
+        # Get date filter from request
+        date_filter = request.GET.get('date_filter', 'today')
+        print(f"DEBUG: date_filter = {date_filter}")
+
+        # Calculate date range based on filter
+        today = timezone.now().date()
+        print(f"DEBUG: today = {today}")
+        if date_filter == 'today':
+            start_date = today
+            end_date = today
+        elif date_filter == 'week':
+            start_date = today - timedelta(days=7)
+            end_date = today
+        elif date_filter == 'month':
+            start_date = today - timedelta(days=30)
+            end_date = today
+        elif date_filter == 'year':
+            start_date = today - timedelta(days=365)
+            end_date = today
+        else:
+            start_date = today
+            end_date = today
+        print(f"DEBUG: date range = {start_date} to {end_date}")
+
+        # Get branch filter
+        branch_id = request.GET.get('branch_id')
+        print(f"DEBUG: branch_id = {branch_id}")
+        branch_filter = Q()
+        if branch_id and branch_id != 'all':
+            branch_filter = Q(branch_id=branch_id)
+        print(f"DEBUG: branch_filter = {branch_filter}")
+
+        # Total Sales
+        print("DEBUG: Calculating total sales")
+        total_sales_query = Sale.objects.filter(
+            organization_id=org_id,
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date,
+            status='completed'
+        ).filter(branch_filter)
+        print(f"DEBUG: total_sales_query count = {total_sales_query.count()}")
+        total_sales = total_sales_query.aggregate(
+            total=Sum('total_amount')
+        )['total'] or 0
+        print(f"DEBUG: total_sales = {total_sales}")
+
+        # Patient Credit (outstanding credit from sales)
+        print("DEBUG: Calculating patient credit")
+        patient_credit_query = Sale.objects.filter(
+            organization_id=org_id,
+            credit_amount__gt=0,
+            status='completed'
+        ).filter(branch_filter)
+        print(f"DEBUG: patient_credit_query count = {patient_credit_query.count()}")
+        patient_credit = patient_credit_query.aggregate(
+            total=Sum('credit_amount')
+        )['total'] or 0
+        print(f"DEBUG: patient_credit = {patient_credit}")
+
+        # Supplier Credit (from bulk orders - calculate outstanding payments)
+        print("DEBUG: Calculating supplier credit")
+        from inventory.models import BulkOrder
+        supplier_credit_query = BulkOrder.objects.filter(
+            buyer_organization_id=org_id,
+            status__in=['confirmed', 'shipped', 'delivered'],
+            remaining_amount__gt=0
+        ).filter(branch_filter)
+        print(f"DEBUG: supplier_credit_query count = {supplier_credit_query.count()}")
+        supplier_credit = supplier_credit_query.aggregate(
+            total=Sum('remaining_amount')
+        )['total'] or 0
+        print(f"DEBUG: supplier_credit = {supplier_credit}")
+
+        # Critical Stock (items below minimum stock level)
+        print("DEBUG: Calculating critical stock")
+        from inventory.models import InventoryItem
+        critical_stock_query = InventoryItem.objects.filter(
+            branch__organization_id=org_id,
+            is_active=True
+        ).filter(branch_filter).filter(
+            Q(quantity__lte=F('min_stock_level')) | Q(min_stock_level__isnull=True, quantity__lte=10)
+        )
+        critical_stock_items = critical_stock_query.count()
+        print(f"DEBUG: critical_stock_items = {critical_stock_items}")
+
+        # Expiring Soon (items expiring within 30 days)
+        print("DEBUG: Calculating expiring items")
+        expiring_soon_query = InventoryItem.objects.filter(
+            branch__organization_id=org_id,
+            expiry_date__isnull=False,
+            expiry_date__lte=today + timedelta(days=30),
+            expiry_date__gte=today,
+            is_active=True,
+            quantity__gt=0
+        ).filter(branch_filter)
+        expiring_soon = expiring_soon_query.count()
+        print(f"DEBUG: expiring_soon = {expiring_soon}")
+
+        result = {
+            'totalSales': float(total_sales),
+            'patientCredit': float(patient_credit),
+            'supplierCredit': float(supplier_credit),
+            'criticalStock': critical_stock_items,
+            'expiringItems': expiring_soon
+        }
+        print(f"DEBUG: Final result = {result}")
+        return Response(result)
+
+    except Exception as e:
+        print(f"DEBUG: Exception occurred: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def pharmacy_sales_chart(request):
+    """Get sales chart data for pharmacy dashboard."""
+    try:
+        org_id = getattr(request.user, 'organization_id', None)
+        if not org_id:
+            return Response({'error': 'User not associated with an organization'}, status=400)
+
+        date_filter = request.GET.get('date_filter', 'today')
+        branch_id = request.GET.get('branch_id')
+
+        branch_filter = Q()
+        if branch_id and branch_id != 'all':
+            branch_filter = Q(branch_id=branch_id)
+
+        today = timezone.now().date()
+
+        if date_filter == 'today':
+            # Hourly data for today
+            sales_data = []
+            for hour in range(9, 20):  # 9 AM to 7 PM
+                hour_start = timezone.make_aware(datetime.combine(today, datetime.min.time().replace(hour=hour)))
+                hour_end = timezone.make_aware(datetime.combine(today, datetime.min.time().replace(hour=hour+1)))
+
+                hour_sales = Sale.objects.filter(
+                    organization_id=org_id,
+                    created_at__gte=hour_start,
+                    created_at__lt=hour_end,
+                    status='completed'
+                ).filter(branch_filter).aggregate(
+                    sales=Sum('total_amount'),
+                    leads=Count('id')
+                )
+
+                sales_data.append({
+                    'name': f'{hour}:00',
+                    'sales': float(hour_sales['sales'] or 0),
+                    'leads': hour_sales['leads'] or 0
+                })
+        else:
+            # Daily data for the period
+            days_count = 7 if date_filter == 'week' else 30 if date_filter == 'month' else 365
+            start_date = today - timedelta(days=days_count)
+
+            sales_data = []
+            for i in range(days_count):
+                current_date = start_date + timedelta(days=i)
+
+                day_sales = Sale.objects.filter(
+                    organization_id=org_id,
+                    created_at__date=current_date,
+                    status='completed'
+                ).filter(branch_filter).aggregate(
+                    sales=Sum('total_amount'),
+                    leads=Count('id')
+                )
+
+                sales_data.append({
+                    'name': current_date.strftime('%a'),  # Mon, Tue, etc.
+                    'sales': float(day_sales['sales'] or 0),
+                    'leads': day_sales['leads'] or 0
+                })
+
+        return Response(sales_data)
+
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def pharmacy_stock_categories(request):
+    """Get stock categories pie chart data."""
+    try:
+        print("DEBUG: Starting pharmacy_stock_categories")
+        org_id = getattr(request.user, 'organization_id', None)
+        print(f"DEBUG: org_id = {org_id}")
+        if not org_id:
+            print("DEBUG: No organization_id found")
+            return Response({'error': 'User not associated with an organization'}, status=400)
+
+        branch_id = request.GET.get('branch_id')
+        print(f"DEBUG: branch_id = {branch_id}")
+        branch_filter = Q()
+        if branch_id and branch_id != 'all':
+            branch_filter = Q(branch__organization_id=org_id, branch_id=branch_id)
+        else:
+            branch_filter = Q(branch__organization_id=org_id)
+        print(f"DEBUG: branch_filter = {branch_filter}")
+
+        from inventory.models import InventoryItem
+        print("DEBUG: Importing InventoryItem model")
+
+        # Group by product category and sum quantities
+        print("DEBUG: Building category_data query")
+        category_data_query = InventoryItem.objects.filter(
+            branch_filter,
+            is_active=True,
+            quantity__gt=0
+        ).values(
+            'product__category__name'
+        ).annotate(
+            total_stock=Sum('quantity')
+        ).order_by('-total_stock')
+        print(f"DEBUG: category_data_query SQL = {category_data_query.query}")
+        category_data = list(category_data_query)
+        print(f"DEBUG: category_data = {category_data}")
+
+        # Format for pie chart (limit to top categories)
+        medicine_data = []
+        colors = ['#8884d8', '#82ca9d', '#ffc658', '#ff7c7c', '#8dd1e1']
+
+        for i, category in enumerate(category_data[:5]):  # Top 5 categories
+            category_name = category['product__category__name'] or 'Uncategorized'
+            medicine_data.append({
+                'name': category_name,
+                'value': category['total_stock'],
+                'color': colors[i % len(colors)]
+            })
+
+        print(f"DEBUG: medicine_data after processing = {medicine_data}")
+
+        # If no categories, provide default data
+        if not medicine_data:
+            print("DEBUG: No category data found, using defaults")
+            medicine_data = [
+                {'name': 'Prescription', 'value': 2847, 'color': '#8884d8'},
+                {'name': 'OTC', 'value': 1234, 'color': '#82ca9d'},
+                {'name': 'Supplies', 'value': 567, 'color': '#ffc658'}
+            ]
+
+        print(f"DEBUG: Final medicine_data = {medicine_data}")
+        return Response(medicine_data)
+
+    except Exception as e:
+        print(f"DEBUG: Exception in pharmacy_stock_categories: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return Response({'error': str(e)}, status=500)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def pharmacy_recent_activities(request):
+    """Get recent activities for pharmacy dashboard."""
+    try:
+        org_id = request.user.organization_id
+        if not org_id:
+            return Response({'error': 'User not associated with an organization'}, status=400)
+
+        branch_id = request.GET.get('branch_id')
+        branch_filter = Q()
+        if branch_id and branch_id != 'all':
+            branch_filter = Q(branch_id=branch_id)
+
+        activities = []
+
+        # Get recent sales (last 5)
+        recent_sales = Sale.objects.filter(
+            organization_id=org_id,
+            status='completed'
+        ).filter(branch_filter).select_related('created_by').order_by('-created_at')[:5]
+
+        for sale in recent_sales:
+            # Calculate time ago
+            time_diff = timezone.now() - sale.created_at
+            if time_diff.days > 0:
+                time_ago = f"{time_diff.days} days ago"
+            elif time_diff.seconds // 3600 > 0:
+                time_ago = f"{time_diff.seconds // 3600} hours ago"
+            elif time_diff.seconds // 60 > 0:
+                time_ago = f"{time_diff.seconds // 60} mins ago"
+            else:
+                time_ago = "Just now"
+
+            activities.append({
+                'id': f'sale_{sale.id}',
+                'type': 'sale',
+                'title': 'Sale completed',
+                'description': f'₹{float(sale.total_amount):.0f} • {time_ago}',
+                'amount': float(sale.total_amount),
+                'timestamp': sale.created_at.isoformat(),
+                'status': 'success'
+            })
+
+        # Get recent stock updates (from inventory items created/modified recently)
+        from inventory.models import InventoryItem
+        recent_stock_updates = InventoryItem.objects.filter(
+            branch__organization_id=org_id
+        ).filter(branch_filter).select_related('product').order_by('-updated_at')[:3]
+
+        for item in recent_stock_updates:
+            # Calculate time ago
+            time_diff = timezone.now() - item.updated_at
+            if time_diff.days > 0:
+                time_ago = f"{time_diff.days} days ago"
+            elif time_diff.seconds // 3600 > 0:
+                time_ago = f"{time_diff.seconds // 3600} hours ago"
+            elif time_diff.seconds // 60 > 0:
+                time_ago = f"{time_diff.seconds // 60} mins ago"
+            else:
+                time_ago = "Just now"
+
+            activities.append({
+                'id': f'stock_{item.id}',
+                'type': 'stock',
+                'title': 'Stock updated',
+                'description': f'{item.product.name} • {time_ago}',
+                'timestamp': item.updated_at.isoformat(),
+                'status': 'info'
+            })
+
+        # Get low stock alerts
+        low_stock_items = InventoryItem.objects.filter(
+            branch__organization_id=org_id,
+            is_active=True
+        ).filter(branch_filter).filter(
+            Q(quantity__lte=F('min_stock_level')) | Q(min_stock_level__isnull=True, quantity__lte=10)
+        ).select_related('product').order_by('quantity')[:2]
+
+        for item in low_stock_items:
+            activities.append({
+                'id': f'alert_{item.id}',
+                'type': 'alert',
+                'title': 'Low stock alert',
+                'description': f'{item.product.name} • {item.quantity} units remaining',
+                'timestamp': timezone.now().isoformat(),
+                'status': 'warning'
+            })
+
+        # Sort activities by timestamp (most recent first)
+        activities.sort(key=lambda x: x['timestamp'], reverse=True)
+
+        # Return only the 8 most recent activities
+        return Response(activities[:8])
+
     except Exception as e:
         return Response({'error': str(e)}, status=500)
 

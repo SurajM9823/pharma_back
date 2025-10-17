@@ -160,8 +160,8 @@ def get_user_module_permissions(request, user_id):
             # Check custom permissions first
             if perm_key in user_permissions:
                 return True
-            # Default to True if no custom permission is set
-            return True
+            # Default to False if no custom permission is set
+            return False
         
         modules = [
             {

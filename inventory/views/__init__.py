@@ -5,3 +5,4 @@ from .additional_purchase_views import *
 from .supplier_ledger_views import *
 from .missing_views import *
 from .customer_views import *
+from .supplier_dashboard_views import *

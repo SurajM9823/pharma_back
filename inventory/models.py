@@ -1332,6 +1332,171 @@ class BulkOrderPayment(models.Model):
         return f"{self.bulk_order.order_number} - {self.payment_type} - {self.amount}"
 
 
+class Rack(models.Model):
+    """Storage rack management for pharmacy inventory organization."""
+
+    name = models.CharField(max_length=100, help_text="Rack name (e.g., Main Rack A)")
+    description = models.TextField(blank=True, help_text="Optional description")
+    rows = models.PositiveIntegerField(help_text="Number of rows in the rack")
+    columns = models.PositiveIntegerField(help_text="Number of columns in the rack")
+
+    # Organization and branch
+    organization = models.ForeignKey(
+        Organization, on_delete=models.CASCADE, related_name="racks"
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.CASCADE, related_name="racks"
+    )
+
+    # Status
+    is_active = models.BooleanField(default=True)
+
+    # Audit fields
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_racks",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        verbose_name = "Rack"
+        verbose_name_plural = "Racks"
+        unique_together = ["organization", "branch", "name"]
+
+    def __str__(self):
+        return f"{self.name} ({self.rows}×{self.columns})"
+
+    @property
+    def total_sections(self):
+        """Calculate total number of sections in the rack."""
+        return self.rows * self.columns
+
+
+class RackSection(models.Model):
+    """Individual sections within a rack for storing medicines."""
+
+    rack = models.ForeignKey(Rack, on_delete=models.CASCADE, related_name="sections")
+    section_name = models.CharField(max_length=10, help_text="Section identifier (e.g., A1, B2)")
+
+    # Position in rack
+    row_number = models.PositiveIntegerField()
+    column_number = models.PositiveIntegerField()
+
+    # Medicine storage (optional - can be empty)
+    medicine = models.ForeignKey(
+        Product,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="rack_sections",
+        help_text="Medicine currently stored in this section"
+    )
+
+    # Quantity tracking
+    quantity = models.PositiveIntegerField(default=0, help_text="Quantity of medicine in this section")
+
+    # Batch information (if applicable)
+    batch_number = models.CharField(max_length=50, blank=True)
+    expiry_date = models.DateField(null=True, blank=True)
+
+    # Status
+    is_occupied = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+
+    # Notes
+    notes = models.TextField(blank=True)
+
+    # Audit fields
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["rack", "row_number", "column_number"]
+        verbose_name = "Rack Section"
+        verbose_name_plural = "Rack Sections"
+        unique_together = ["rack", "section_name"]
+
+    def __str__(self):
+        return f"{self.rack.name} - {self.section_name}"
+
+    @property
+    def is_low_stock(self):
+        """Check if section has low stock."""
+        if not self.medicine:
+            return False
+        return self.quantity <= (self.medicine.min_stock_level or 10)
+
+    @property
+    def is_expired(self):
+        """Check if medicine in section is expired."""
+        if not self.expiry_date:
+            return False
+        from datetime import date
+        return self.expiry_date < date.today()
+
+    @property
+    def days_to_expiry(self):
+        """Get days until expiry."""
+        if not self.expiry_date:
+            return None
+        from datetime import date
+        return (self.expiry_date - date.today()).days
+
+
+class RackSectionAssignment(models.Model):
+    """Track medicine assignments to rack sections."""
+
+    rack_section = models.ForeignKey(
+        RackSection,
+        on_delete=models.CASCADE,
+        related_name="assignments"
+    )
+    medicine = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name="rack_assignments"
+    )
+
+    # Assignment details
+    quantity_assigned = models.PositiveIntegerField()
+    batch_number = models.CharField(max_length=50, blank=True)
+    expiry_date = models.DateField(null=True, blank=True)
+
+    # Assignment metadata
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="rack_assignments"
+    )
+    assigned_at = models.DateTimeField(auto_now_add=True)
+
+    # Removal tracking
+    removed_at = models.DateTimeField(null=True, blank=True)
+    removed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="removed_rack_assignments"
+    )
+    removal_reason = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["-assigned_at"]
+        verbose_name = "Rack Section Assignment"
+        verbose_name_plural = "Rack Section Assignments"
+
+    def __str__(self):
+        return f"{self.rack_section} - {self.medicine.name} ({self.quantity_assigned})"
+
+
 class SupplierLedger(models.Model):
     """Unified supplier payment tracking across all systems"""
 

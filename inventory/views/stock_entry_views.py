@@ -191,6 +191,17 @@ def create_inventory_item(request):
                     errors.append(error_msg)
                     continue
                 
+                # Get rack and section information
+                rack_id = item_data.get('rackId')
+                section_id = item_data.get('sectionId')
+                rack_name = item_data.get('rackName', '')
+                section_name = item_data.get('sectionName', '')
+
+                # Create location string from rack and section
+                location = ''
+                if rack_name and section_name:
+                    location = f"{rack_name}-{section_name}"
+
                 inventory_item = InventoryItem.objects.create(
                     product=product,
                     supplier_type='user' if supplier_user else 'custom',
@@ -203,6 +214,7 @@ def create_inventory_item(request):
                     batch_number=item_data['batch_number'],
                     manufacturing_date=item_data.get('manufacturing_date') or None,
                     expiry_date=item_data['expiry_date'],
+                    location=location,
                     organization_id=organization_id,
                     branch_id=target_branch_id,
                     created_by=request.user
@@ -460,15 +472,23 @@ def restock_item(request):
                 }
             )
         
-        # Get location from previous item if exists
+        # Get rack and section information
+        rack_id = item_data.get('rackId')
+        section_id = item_data.get('sectionId')
+        rack_name = item_data.get('rackName', '')
+        section_name = item_data.get('sectionName', '')
+
+        # Create location string from rack and section, or use previous item's location
         location = ''
-        if previous_item_id:
+        if rack_name and section_name:
+            location = f"{rack_name}-{section_name}"
+        elif previous_item_id:
             try:
                 previous_item = InventoryItem.objects.get(id=previous_item_id)
                 location = previous_item.location or ''
             except InventoryItem.DoesNotExist:
                 pass
-        
+
         # Create new inventory item
         inventory_item = InventoryItem.objects.create(
             product=product,
@@ -680,6 +700,64 @@ def purchase_history(request):
 
 
 @csrf_exempt
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def deallocate_stock(request):
+    """Deallocate stock from cart when quantity is reduced."""
+    try:
+        medicine_id = request.data.get('medicine_id')
+        quantity = int(request.data.get('quantity', 0))
+        branch_id = request.data.get('branch_id')
+        cart_key = request.data.get('cart_key')
+
+        if not medicine_id or quantity <= 0:
+            return Response({'error': 'Invalid medicine_id or quantity'}, status=400)
+
+        # Get user's allocated batches for this medicine in cart
+        # This is a simplified version - in a real implementation, you'd track allocations per cart item
+        inventory_items = InventoryItem.objects.filter(
+            product_id=medicine_id,
+            branch_id=branch_id,
+            quantity__gt=0,
+            is_active=True
+        ).order_by('-expiry_date')  # LIFO for deallocation
+
+        if not inventory_items.exists():
+            return Response({'error': 'No stock available for this medicine'}, status=400)
+
+        # Calculate how much to deallocate from each batch (simplified - deallocate from newest first)
+        remaining_quantity = quantity
+        deallocated_batches = []
+
+        for item in inventory_items:
+            if remaining_quantity <= 0:
+                break
+
+            deallocate_qty = min(item.quantity, remaining_quantity)
+            item.quantity += deallocate_qty  # ADD back to inventory (deallocate)
+            item.save()
+
+            deallocated_batches.append({
+                'inventory_item_id': item.id,
+                'batch_number': item.batch_number,
+                'deallocated_quantity': deallocate_qty,
+                'selling_price': float(item.selling_price or item.cost_price),
+                'available_quantity': item.quantity
+            })
+
+            remaining_quantity -= deallocate_qty
+
+        return Response({
+            'deallocated_batches': deallocated_batches,
+            'total_deallocated': quantity,
+            'medicine_id': medicine_id,
+            'remaining_batches': []  # In a real implementation, you'd return remaining allocated batches
+        })
+
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
+
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def test_api(request):

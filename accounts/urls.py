@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from .stats_views import user_stats
 
 urlpatterns = [
     path('login/', views.login, name='login'),
@@ -11,4 +12,5 @@ urlpatterns = [
     path('users/<int:user_id>/module-permissions/', views.get_user_module_permissions, name='get_user_module_permissions'),
     path('users/<int:user_id>/update-permissions/', views.update_user_permissions, name='update_user_permissions'),
     path('modules/', views.get_available_modules, name='get_available_modules'),
+    path('stats/', user_stats, name='user_stats'),
 ]

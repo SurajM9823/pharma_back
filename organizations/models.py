@@ -393,6 +393,13 @@ class SubscriptionPlan(models.Model):
     
     class Meta:
         ordering = ['price']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['name'],
+                condition=models.Q(is_active=True),
+                name='unique_active_plan_name'
+            )
+        ]
     
     def __str__(self):
         return self.display_name

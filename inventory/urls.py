@@ -2,6 +2,10 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import views
 from .views.customer_views import collect_customer_payment
+from .views.rack_views import (
+    rack_list_create, rack_detail, rack_sections,
+    assign_medicine_to_section, remove_medicine_from_section
+)
 
 app_name = 'inventory'
 
@@ -27,6 +31,9 @@ urlpatterns = [
 
 
     
+    # Stock deallocation
+    path('deallocate-stock/', views.deallocate_stock, name='deallocate_stock'),
+
     # Test endpoint
     path('test/', views.test_api, name='test_api'),
     path('debug/suppliers/', views.debug_suppliers, name='debug_suppliers'),
@@ -83,10 +90,24 @@ urlpatterns = [
     path('transaction-details/', views.get_transaction_details, name='get_transaction_details'),
 
     path('supplier-payment/', views.record_supplier_payment, name='record_supplier_payment'),
-    
+
+    # Rack Management
+    path('racks/', rack_list_create, name='rack_list_create'),
+    path('racks/<int:rack_id>/', rack_detail, name='rack_detail'),
+    path('racks/<int:rack_id>/sections/', rack_sections, name='rack_sections'),
+    path('rack-sections/<int:section_id>/assign-medicine/', assign_medicine_to_section, name='assign_medicine_to_section'),
+    path('rack-sections/<int:section_id>/remove-medicine/', remove_medicine_from_section, name='remove_medicine_from_section'),
+
     # Customer management
     path('customers/<str:customer_id>/details/', views.get_customer_details, name='get_customer_details'),
     path('customers/<str:customer_id>/transactions/', views.customer_transactions, name='customer_transactions'),
     path('customers/<str:customer_id>/collect-payment/', views.collect_customer_payment, name='collect_customer_payment'),
     path('customers/', views.customer_list, name='customer_list'),
+    
+    # Supplier Dashboard
+    path('supplier/dashboard/stats/', views.supplier_dashboard_stats, name='supplier_dashboard_stats'),
+    path('supplier/dashboard/recent-orders/', views.supplier_recent_orders, name='supplier_recent_orders'),
+    path('supplier/dashboard/orders-over-time/', views.supplier_orders_over_time, name='supplier_orders_over_time'),
+    path('supplier/dashboard/customers-chart/', views.supplier_customers_chart, name='supplier_customers_chart'),
+    path('supplier/dashboard/top-products/', views.supplier_top_products, name='supplier_top_products'),
 ]

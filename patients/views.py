@@ -30,23 +30,36 @@ class PatientListCreateView(generics.ListCreateAPIView):
         user = self.request.user
         
         if user.role == User.SUPER_ADMIN:
-            return Patient.objects.all()
+            queryset = Patient.objects.all()
         elif user.role == User.PHARMACY_OWNER:
-            return Patient.objects.filter(organization_id=user.organization_id)
+            queryset = Patient.objects.filter(organization_id=user.organization_id)
         elif user.role in [User.BRANCH_MANAGER, User.SENIOR_PHARMACIST]:
-            return Patient.objects.filter(
+            queryset = Patient.objects.filter(
                 organization_id=user.organization_id,
                 branch_id=user.branch_id
             )
         else:
-            # Regular users can see all patients in their organization
-            return Patient.objects.filter(organization_id=user.organization_id)
+            queryset = Patient.objects.filter(organization_id=user.organization_id)
+        
+        # Simple search
+        search = self.request.query_params.get('search', '').strip()
+        if search:
+            queryset = queryset.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(phone__icontains=search) |
+                Q(patient_id__icontains=search)
+            )
+        
+        return queryset.order_by('-created_at')
     
     def get_serializer_class(self):
         """Use different serializer for creation."""
         if self.request.method == 'POST':
             return PatientCreateSerializer
         return PatientSerializer
+    
+
     
     def perform_create(self, serializer):
         """Set organization and branch based on current user with auto-generated patient ID."""
@@ -314,9 +327,10 @@ def get_patient_stats(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def search_patients(request):
-    """Search patients by name, phone, or patient ID."""
+    """Enhanced search patients by name, phone, patient ID, or billing information."""
     user = request.user
     query = request.GET.get('q', '').strip()
+    search_type = request.GET.get('search_type', 'all')  # all, name, phone, bill_id, date
     
     if not query:
         return Response({'patients': []})
@@ -327,16 +341,75 @@ def search_patients(request):
     else:
         patients = Patient.objects.filter(organization_id=user.organization_id)
     
-    # Search by name, phone, or patient ID
-    patients = patients.filter(
-        Q(first_name__icontains=query) |
-        Q(last_name__icontains=query) |
-        Q(phone__icontains=query) |
-        Q(patient_id__icontains=query)
-    )[:20]  # Limit to 20 results
+    # Add billing information
+    from pos.models import Sale
+    patients = patients.prefetch_related('sales')
     
-    serializer = PatientSummarySerializer(patients, many=True)
-    return Response({'patients': serializer.data})
+    # Enhanced search based on type
+    if search_type == 'name':
+        patients = patients.filter(
+            Q(first_name__icontains=query) |
+            Q(last_name__icontains=query)
+        )
+    elif search_type == 'phone':
+        patients = patients.filter(Q(phone__icontains=query))
+    elif search_type == 'bill_id':
+        patients = patients.filter(Q(sales__sale_number__icontains=query))
+    elif search_type == 'date':
+        try:
+            from datetime import datetime
+            search_date = datetime.strptime(query, '%Y-%m-%d').date()
+            patients = patients.filter(Q(sales__created_at__date=search_date))
+        except ValueError:
+            patients = patients.none()
+    else:  # search_type == 'all'
+        patients = patients.filter(
+            Q(first_name__icontains=query) |
+            Q(last_name__icontains=query) |
+            Q(phone__icontains=query) |
+            Q(patient_id__icontains=query) |
+            Q(email__icontains=query) |
+            Q(address__icontains=query) |
+            Q(city__icontains=query) |
+            # Search in billing information
+            Q(sales__sale_number__icontains=query) |
+            Q(sales__total_amount__icontains=query)
+        ).distinct()
+    
+    # Limit results and add billing info
+    patients = patients[:20]
+    
+    # Prepare response with billing information
+    patients_data = []
+    for patient in patients:
+        # Get latest sale for last visit
+        latest_sale = patient.sales.filter(status='completed').order_by('-created_at').first()
+        
+        # Get total visits and billing
+        total_visits = patient.sales.filter(status='completed').count()
+        total_billing = sum(sale.total_amount for sale in patient.sales.filter(status='completed'))
+        
+        patient_data = PatientSummarySerializer(patient).data
+        patient_data.update({
+            'last_visit_date': latest_sale.created_at.date() if latest_sale else None,
+            'total_visits': total_visits,
+            'total_billing': float(total_billing),
+            'latest_bill_id': latest_sale.sale_number if latest_sale else None,
+            'latest_bill_amount': float(latest_sale.total_amount) if latest_sale else 0,
+            'matching_bills': [
+                {
+                    'bill_id': sale.sale_number,
+                    'amount': float(sale.total_amount),
+                    'date': sale.created_at.date(),
+                    'status': sale.status
+                } for sale in patient.sales.filter(
+                    Q(sale_number__icontains=query) if search_type in ['bill_id', 'all'] else Q()
+                )[:3]  # Show max 3 matching bills
+            ] if search_type in ['bill_id', 'all'] else []
+        })
+        patients_data.append(patient_data)
+    
+    return Response({'patients': patients_data})
 
 
 @api_view(['GET'])

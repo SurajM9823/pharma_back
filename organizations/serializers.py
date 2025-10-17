@@ -129,9 +129,17 @@ class BranchSerializer(serializers.ModelSerializer):
     """Basic branch serializer."""
     organization_name = serializers.CharField(source='organization.name', read_only=True)
     manager_name = serializers.CharField(source='manager.get_full_name', read_only=True)
-    total_users = serializers.IntegerField(read_only=True)
-    active_users = serializers.IntegerField(read_only=True)
+    total_users = serializers.SerializerMethodField()
+    active_users = serializers.SerializerMethodField()
     full_address = serializers.CharField(read_only=True)
+    
+    def get_total_users(self, obj):
+        from accounts.models import User
+        return User.objects.filter(branch_id=obj.id).count()
+    
+    def get_active_users(self, obj):
+        from accounts.models import User
+        return User.objects.filter(branch_id=obj.id, status='active', is_active=True).count()
 
     class Meta:
         model = Branch
@@ -307,6 +315,22 @@ class SubscriptionPlanSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
         extra_kwargs = {'price': {'required': False}}
+    
+    def validate_name(self, value):
+        """Validate plan name uniqueness for active plans."""
+        # Check if a plan with this name already exists and is active
+        existing_plan = SubscriptionPlan.objects.filter(name=value, is_active=True)
+        
+        # If updating, exclude the current instance
+        if self.instance:
+            existing_plan = existing_plan.exclude(id=self.instance.id)
+        
+        if existing_plan.exists():
+            raise serializers.ValidationError(
+                _(f'A subscription plan with type "{value}" already exists. '
+                  'Each plan type can only be created once.')
+            )
+        return value
     
     def create(self, validated_data):
         if 'pricing_tiers' in validated_data and validated_data['pricing_tiers']:

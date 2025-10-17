@@ -1,6 +1,7 @@
 from django.urls import path
 from . import views
 from . import reports_views
+from .manager_dashboard_views import *
 
 app_name = 'pos'
 
@@ -23,9 +24,26 @@ urlpatterns = [
     
     # Statistics
     path('stats/', views.pos_stats, name='pos_stats'),
+
+    # Pharmacy Dashboard APIs
+    path('dashboard/stats/', views.pharmacy_dashboard_stats, name='pharmacy_dashboard_stats'),
+    path('dashboard/sales-chart/', views.pharmacy_sales_chart, name='pharmacy_sales_chart'),
+    path('dashboard/stock-categories/', views.pharmacy_stock_categories, name='pharmacy_stock_categories'),
+    path('dashboard/recent-activities/', views.pharmacy_recent_activities, name='pharmacy_recent_activities'),
+
+    # Patient APIs
+    path('credit-history/', views.patient_credit_history, name='patient_credit_history'),
     
     # Settings
     path('settings/', views.pos_settings, name='pos_settings'),
+    
+    # Manager Dashboard APIs
+    path('manager/dashboard/stats/', views.manager_dashboard_stats, name='manager_dashboard_stats'),
+    path('manager/dashboard/sales-over-time/', views.manager_sales_over_time, name='manager_sales_over_time'),
+    path('manager/dashboard/payment-methods/', views.manager_payment_methods_chart, name='manager_payment_methods_chart'),
+    path('manager/dashboard/top-products/', views.manager_top_products, name='manager_top_products'),
+    path('manager/dashboard/recent-activities/', views.manager_recent_activities, name='manager_recent_activities'),
+    path('manager/dashboard/staff-performance/', views.manager_staff_performance, name='manager_staff_performance'),
     
     # Reports endpoints
     path('reports/sales-summary/', reports_views.sales_summary, name='sales_summary'),

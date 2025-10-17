@@ -218,18 +218,36 @@ def medicine_search(request):
     """Search for medicines in the product list (global search)."""
     try:
         query = request.GET.get('q', '').strip()
-        
+
         if not query:
             return Response([])
-        
+
+        # Get user's organization and branch
+        organization_id = getattr(request.user, 'organization_id', None)
+        branch_id = getattr(request.user, 'branch_id', None)
+        user_role = getattr(request.user, 'role', None)
+
+        print(f"DEBUG: medicine_search - org_id={organization_id}, branch_id={branch_id}, role={user_role}, query='{query}'")
+
+        if not organization_id:
+            return Response({'error': 'User not associated with an organization'}, status=400)
+
+        # Always filter by user's branch - even pharmacy_owner should only see medicines in their assigned branch
+        if not branch_id:
+            return Response({'error': 'User not associated with a branch'}, status=400)
+        branch_filter = branch_id
+
+        # For stock management form, we want to search from all medicines in the organization
+        # Not just those with inventory, so users can add new stock
         medicines = Product.objects.filter(
-            is_active=True
+            is_active=True,
+            organization_id=organization_id
         ).filter(
             Q(name__icontains=query) |
             Q(generic_name__icontains=query) |
             Q(brand_name__icontains=query)
         )[:20]
-        
+
         results = []
         for medicine in medicines:
             results.append({
@@ -244,10 +262,13 @@ def medicine_search(request):
                 'selling_price': float(medicine.selling_price) if medicine.selling_price else 0,
                 'pack_size': medicine.pack_size
             })
-        
+
         return Response(results)
-        
+
     except Exception as e:
+        print(f"Medicine search error: {str(e)}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
         return Response({'error': str(e)}, status=500)
 
 

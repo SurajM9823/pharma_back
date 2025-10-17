@@ -16,6 +16,7 @@ print("BRANCH VIEWS MODULE LOADED")
 logger.critical("BRANCH VIEWS MODULE LOADED WITH LOGGER")
 
 from .models import Organization, Branch, OrganizationSettings
+from accounts.models import User
 from .serializers import (
     OrganizationSerializer,
     OrganizationCreateSerializer,
@@ -24,6 +25,31 @@ from .serializers import (
     BranchCreateSerializer,
     OrganizationSettingsSerializer
 )
+
+
+def check_organization_subscription(user):
+    """Check if user's organization has an active subscription."""
+    if user.role == 'super_admin':
+        return True, None
+    
+    if not user.organization_id:
+        return False, "No organization associated with user"
+    
+    try:
+        from django.utils import timezone
+        from .models import OrganizationSubscription
+        active_subscription = OrganizationSubscription.objects.filter(
+            organization_id=user.organization_id,
+            status='active',
+            end_date__gt=timezone.now()
+        ).first()
+        
+        if not active_subscription:
+            return False, "No active subscription found for organization"
+        
+        return True, None
+    except Exception as e:
+        return False, f"Error checking subscription: {str(e)}"
 from accounts.models import User
 from accounts.serializers import UserSerializer, UserCreateSerializer
 
@@ -206,10 +232,14 @@ class BranchListView(generics.ListCreateAPIView):
     def list(self, request, *args, **kwargs):
         """Override list method to handle queryset manually."""
         user = request.user
+        organization_filter = request.query_params.get('organization')
 
         # Manual queryset filtering based on user permissions
         if user.role == 'super_admin':
             queryset = Branch.objects.all()
+            # Apply organization filter if provided
+            if organization_filter:
+                queryset = queryset.filter(organization_id=organization_filter)
         elif user.role == 'pharmacy_owner' and user.organization_id:
             queryset = Branch.objects.filter(organization_id=user.organization_id)
         elif user.organization_id:
@@ -349,6 +379,16 @@ class OrganizationSettingsView(generics.RetrieveUpdateAPIView):
 def get_organization_stats(request):
     """Get comprehensive organization statistics for dashboard."""
     user = request.user
+    
+    # Check subscription for non-super admin users
+    if user.role != 'super_admin':
+        has_subscription, error_msg = check_organization_subscription(user)
+        if not has_subscription:
+            return Response({
+                'error': 'Subscription expired',
+                'message': 'Your organization\'s subscription has expired. Please renew to continue using the system.',
+                'subscription_required': True
+            }, status=status.HTTP_402_PAYMENT_REQUIRED)
 
     if user.role == 'super_admin':
         # Organization statistics
@@ -755,7 +795,9 @@ def subscription_stats(request):
     stats = {
         'total_organizations': total_orgs,
         'active_subscriptions': active_subscriptions,
-        'monthly_revenue': monthly_revenue,
+        'total_users': User.objects.count(),
+        'active_users': User.objects.filter(status='active', is_active=True).count(),
+        'monthly_revenue': float(monthly_revenue),
         'growth_rate': round(growth_rate, 1),
         'subscription_distribution': subscription_distribution,
         'recent_subscriptions': OrganizationSubscriptionSerializer(recent_subscriptions, many=True).data
