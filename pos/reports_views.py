@@ -40,23 +40,30 @@ def sales_summary(request):
         if not organization_id:
             return Response({'error': 'User not associated with an organization'}, status=400)
         
-        # Base queryset
+        # Base queryset - include both completed and credit sales
         sales_qs = Sale.objects.filter(
             organization_id=organization_id,
             sale_date__date__gte=start_date,
             sale_date__date__lte=end_date,
-            status='completed'
+            status__in=['completed', 'credit']
         )
         
         # Calculate summary metrics
         summary = sales_qs.aggregate(
-            total_sales=Sum('total_amount') or Decimal('0'),
+            total_sales=Sum('total_amount'),
             total_transactions=Count('id'),
-            total_items_sold=Sum('items__quantity') or 0,
-            avg_transaction_value=Avg('total_amount') or Decimal('0'),
-            total_discount=Sum('discount_amount') or Decimal('0'),
-            total_tax=Sum('tax_amount') or Decimal('0')
+            total_items_sold=Sum('items__quantity'),
+            avg_transaction_value=Avg('total_amount'),
+            total_discount=Sum('discount_amount'),
+            total_tax=Sum('tax_amount')
         )
+        
+        # Handle None values
+        summary['total_sales'] = summary['total_sales'] or Decimal('0')
+        summary['total_items_sold'] = summary['total_items_sold'] or 0
+        summary['avg_transaction_value'] = summary['avg_transaction_value'] or Decimal('0')
+        summary['total_discount'] = summary['total_discount'] or Decimal('0')
+        summary['total_tax'] = summary['total_tax'] or Decimal('0')
         
         # Get unique customers count (handle None values)
         unique_customers = sales_qs.exclude(
@@ -69,7 +76,10 @@ def sales_summary(request):
         
         for sale in sales_qs.prefetch_related('items__product'):
             for item in sale.items.all():
-                cost_price = item.product.cost_price or Decimal('0')
+                if item.product and hasattr(item.product, 'cost_price'):
+                    cost_price = item.product.cost_price or Decimal('0')
+                else:
+                    cost_price = Decimal('0')
                 selling_price = item.unit_price or Decimal('0')
                 quantity = item.quantity or 0
                 item_cost = cost_price * quantity
@@ -85,11 +95,15 @@ def sales_summary(request):
             organization_id=organization_id,
             sale_date__date__gte=prev_start,
             sale_date__date__lte=prev_end,
-            status='completed'
+            status__in=['completed', 'credit']
         ).aggregate(
-            total_sales=Sum('total_amount') or Decimal('0'),
+            total_sales=Sum('total_amount'),
             total_transactions=Count('id')
         )
+        
+        # Handle None values
+        prev_sales['total_sales'] = prev_sales['total_sales'] or Decimal('0')
+        prev_sales['total_transactions'] = prev_sales['total_transactions'] or 0
         
         # Calculate growth percentages
         sales_growth = 0
@@ -152,7 +166,7 @@ def daily_sales_trend(request):
             organization_id=organization_id,
             sale_date__date__gte=start_date,
             sale_date__date__lte=end_date,
-            status='completed'
+            status__in=['completed', 'credit']
         ).annotate(
             date=TruncDate('sale_date')
         ).values('date').annotate(
@@ -196,7 +210,7 @@ def hourly_sales_pattern(request):
         hourly_data = Sale.objects.filter(
             organization_id=organization_id,
             sale_date__date=target_date,
-            status='completed'
+            status__in=['completed', 'credit']
         ).annotate(
             hour=Extract('sale_date', 'hour')
         ).values('hour').annotate(
@@ -250,7 +264,7 @@ def top_selling_products(request):
             sale__organization_id=organization_id,
             sale__sale_date__date__gte=start_date,
             sale__sale_date__date__lte=end_date,
-            sale__status='completed'
+            sale__status__in=['completed', 'credit']
         ).values(
             'product__id',
             'product__name',
@@ -331,7 +345,7 @@ def payment_methods_report(request):
             sale__organization_id=organization_id,
             payment_date__date__gte=start_date,
             payment_date__date__lte=end_date,
-            sale__status='completed'
+            sale__status__in=['completed', 'credit']
         ).values('payment_method').annotate(
             total_amount=Sum('amount'),
             transaction_count=Count('id')
@@ -392,7 +406,7 @@ def staff_performance_report(request):
             organization_id=organization_id,
             sale_date__date__gte=start_date,
             sale_date__date__lte=end_date,
-            status='completed',
+            status__in=['completed', 'credit'],
             created_by__isnull=False
         ).values(
             'created_by__id',
@@ -455,7 +469,7 @@ def customer_analytics(request):
             organization_id=organization_id,
             sale_date__date__gte=start_date,
             sale_date__date__lte=end_date,
-            status='completed'
+            status__in=['completed', 'credit']
         )
         
         # New vs returning customers
